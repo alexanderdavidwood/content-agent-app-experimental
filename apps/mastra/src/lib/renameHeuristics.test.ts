@@ -8,6 +8,7 @@ test("buildHeuristicDiscoveryPlan keeps semantic queries within the MVP cap", ()
     oldProductName: "Acme Widget",
     newProductName: "Acme Nova",
     defaultLocale: "en-US",
+    searchMode: "semantic",
     contentTypeIds: [],
   });
 
@@ -22,6 +23,7 @@ test("buildHeuristicProposals creates segment-level rich text proposals", () => 
       oldProductName: "Acme Widget",
       newProductName: "Acme Nova",
       defaultLocale: "en-US",
+      searchMode: "semantic",
       contentTypeIds: [],
     },
     [

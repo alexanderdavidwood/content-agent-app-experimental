@@ -163,6 +163,7 @@ export function buildDefaultRenameInput(
     oldProductName: "",
     newProductName: "",
     defaultLocale: locale,
+    searchMode: "semantic",
     contentTypeIds: [],
     surfaceContext,
   };

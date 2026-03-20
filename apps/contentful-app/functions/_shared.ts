@@ -79,6 +79,13 @@ export function semanticHeaders(accessToken: string) {
   };
 }
 
+export function managementHeaders(accessToken: string) {
+  return {
+    Authorization: `Bearer ${accessToken}`,
+    "Content-Type": "application/json",
+  };
+}
+
 export function buildSemanticEndpoints(input: {
   apiHost: string;
   organizationId: string;
@@ -101,6 +108,9 @@ export function buildSemanticEndpoints(input: {
     semanticSearch:
       process.env.CONTENTFUL_SEMANTIC_SEARCH_URL ??
       `${host}/spaces/${spaceId}/environments/${environmentId}/entries/semantic_search`,
+    entries:
+      process.env.CONTENTFUL_ENTRIES_URL ??
+      `${host}/spaces/${spaceId}/environments/${environmentId}/entries`,
   };
 }
 

@@ -89,6 +89,7 @@ export default function ChatWorkspace({
   async function startRenameRun(nextInput: RenameRunInput) {
     const normalized: RenameRunInput = {
       ...nextInput,
+      searchMode: nextInput.searchMode ?? "semantic",
       contentTypeIds:
         nextInput.contentTypeIds.length > 0
           ? nextInput.contentTypeIds
@@ -102,17 +103,21 @@ export default function ChatWorkspace({
     setProposedChanges([]);
     setCandidateSnapshots([]);
     setApprovals({});
+    setIndexStatus(null);
+    setSearchResult(null);
 
-    const ensureIndex = await invokeAppAction<
-      { locale: string; createIfMissing: boolean },
-      SemanticEnsureIndexResult
-    >(sdk, "semantic.ensureIndex", {
-      locale: defaultLocale,
-      createIfMissing: true,
-    });
-    setIndexStatus(ensureIndex);
+    if (normalized.searchMode !== "keyword") {
+      const ensureIndex = await invokeAppAction<
+        { locale: string; createIfMissing: boolean },
+        SemanticEnsureIndexResult
+      >(sdk, "semantic.ensureIndex", {
+        locale: defaultLocale,
+        createIfMissing: true,
+      });
+      setIndexStatus(ensureIndex);
+    }
 
-    const prompt = `Prepare a product rename scan for "${normalized.oldProductName}" -> "${normalized.newProductName}" in locale ${defaultLocale}.`;
+    const prompt = `Prepare a ${normalized.searchMode} product rename scan for "${normalized.oldProductName}" -> "${normalized.newProductName}" in locale ${defaultLocale}.`;
 
     await sendMessage({
       text: prompt,
@@ -140,9 +145,14 @@ export default function ChatWorkspace({
     setRunId(runPayload.runId);
 
     const semanticResponse = await invokeAppAction<
-      { queries: string[]; limitPerQuery: number },
+      {
+        mode: "semantic" | "keyword" | "hybrid";
+        queries: string[];
+        limitPerQuery: number;
+      },
       SemanticSearchResult
     >(sdk, "semantic.search", {
+      mode: normalized.searchMode,
       queries: runPayload.discoveryPlan.queries,
       limitPerQuery: Math.min(parameters.maxCandidatesPerRun, 10),
     });
@@ -291,7 +301,7 @@ export default function ChatWorkspace({
           ) : null}
 
           {searchResult ? (
-            <AIChatArtifactMessage title="Semantic scan summary">
+            <AIChatArtifactMessage title={`${runInput?.searchMode ?? "semantic"} scan summary`}>
               <p style={{ margin: 0 }}>
                 Candidate entries: {searchResult.entryIds.length}
               </p>

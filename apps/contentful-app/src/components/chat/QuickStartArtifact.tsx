@@ -15,6 +15,9 @@ export default function QuickStartArtifact({
   const [newProductName, setNewProductName] = useState("");
   const [userNotes, setUserNotes] = useState("");
   const [contentTypeIds, setContentTypeIds] = useState("");
+  const [searchMode, setSearchMode] = useState<
+    RenameRunInput["searchMode"]
+  >("semantic");
   const [isStarting, setIsStarting] = useState(false);
 
   return (
@@ -27,6 +30,7 @@ export default function QuickStartArtifact({
             oldProductName,
             newProductName,
             defaultLocale,
+            searchMode,
             contentTypeIds: contentTypeIds
               .split(",")
               .map((value) => value.trim())
@@ -56,6 +60,19 @@ export default function QuickStartArtifact({
         />
       </label>
       <label style={{ display: "grid", gap: 6 }}>
+        <span>Search mode</span>
+        <select
+          value={searchMode}
+          onChange={(event) =>
+            setSearchMode(event.target.value as RenameRunInput["searchMode"])
+          }
+        >
+          <option value="semantic">Semantic</option>
+          <option value="keyword">Keyword</option>
+          <option value="hybrid">Hybrid (semantic + keyword)</option>
+        </select>
+      </label>
+      <label style={{ display: "grid", gap: 6 }}>
         <span>Limit to content types</span>
         <input
           placeholder="page, promoBanner, product"
@@ -72,7 +89,7 @@ export default function QuickStartArtifact({
         />
       </label>
       <button type="submit" disabled={isStarting}>
-        {isStarting ? "Starting run..." : "Start semantic scan"}
+        {isStarting ? "Starting run..." : "Start scan"}
       </button>
     </form>
   );
