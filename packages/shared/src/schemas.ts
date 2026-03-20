@@ -111,7 +111,7 @@ export const semanticEnsureIndexResultSchema = z.object({
 
 export const semanticSearchInputSchema = z.object({
   mode: z.enum(["semantic", "keyword", "hybrid"]).default("semantic"),
-  queries: z.array(z.string().min(1)).min(1).max(5),
+  queries: z.array(z.string().min(1)).min(1).max(10),
   limitPerQuery: z.number().int().positive().max(10).default(10),
 });
 

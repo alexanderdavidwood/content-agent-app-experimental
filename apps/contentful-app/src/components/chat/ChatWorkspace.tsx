@@ -22,10 +22,14 @@ import type {
   SemanticSearchResult,
 } from "@contentful-rename/shared";
 import {
+  describeBackendHttpFailure,
   buildApplyOperations,
   fetchEntrySnapshots,
+  fallbackKeywordSearch,
   getInstallationParameters,
+  hasAppActionApi,
   invokeAppAction,
+  preflightMastraBackend,
   applyOperations,
 } from "../../lib/contentfulClient";
 import { buildChatApiUrl, parseAssistantText } from "../../lib/chatTransport";
@@ -43,6 +47,44 @@ export default function ChatWorkspace({
   surfaceContext,
   showReviewPanel,
 }: ChatWorkspaceProps) {
+  function escapeRegex(value: string) {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+
+  function buildNameVariants(name: string) {
+    const trimmed = name.trim();
+    const variants = new Set<string>([
+      trimmed,
+      `${trimmed}s`,
+      `${trimmed}'s`,
+      `${trimmed}’s`,
+      trimmed.replace(/\s+/g, "-"),
+      trimmed.replace(/-/g, " "),
+    ]);
+    return [...variants].filter(Boolean);
+  }
+
+  function candidateContainsVariant(
+    candidate: CandidateEntrySnapshot,
+    variants: string[],
+  ) {
+    return candidate.fields.some((field) => {
+      const values: string[] = [];
+      if (typeof field.rawValue === "string") {
+        values.push(field.rawValue);
+      }
+      for (const segment of field.segments) {
+        values.push(segment.text);
+      }
+
+      return values.some((value) =>
+        variants.some((variant) =>
+          new RegExp(escapeRegex(variant), "i").test(value),
+        ),
+      );
+    });
+  }
+
   const parameters = getInstallationParameters(sdk);
   const defaultLocale = sdk.locales?.default ?? "en-US";
   const [input, setInput] = useState("");
@@ -61,7 +103,12 @@ export default function ChatWorkspace({
     null,
   );
   const [isApplying, setIsApplying] = useState(false);
+  const [isStartingRun, setIsStartingRun] = useState(false);
   const [runId, setRunId] = useState<string | null>(null);
+  const [runError, setRunError] = useState<string | null>(null);
+  const [lastAttemptInput, setLastAttemptInput] = useState<RenameRunInput | null>(
+    null,
+  );
 
   const { messages, sendMessage, status, setMessages } = useChat({
     transport: new TextStreamChatTransport({
@@ -87,121 +134,192 @@ export default function ChatWorkspace({
   }, [messages.length, runInput, setMessages]);
 
   async function startRenameRun(nextInput: RenameRunInput) {
-    const normalized: RenameRunInput = {
-      ...nextInput,
-      searchMode: nextInput.searchMode ?? "semantic",
-      contentTypeIds:
-        nextInput.contentTypeIds.length > 0
-          ? nextInput.contentTypeIds
-          : parameters.allowedContentTypes,
-      defaultLocale,
-      surfaceContext,
-    };
+    setIsStartingRun(true);
+    try {
+      const normalized: RenameRunInput = {
+        ...nextInput,
+        searchMode: nextInput.searchMode ?? "semantic",
+        contentTypeIds:
+          nextInput.contentTypeIds.length > 0
+            ? nextInput.contentTypeIds
+            : parameters.allowedContentTypes,
+        defaultLocale,
+        surfaceContext,
+      };
+      setLastAttemptInput(normalized);
 
-    setRunInput(normalized);
-    setApplyResults([]);
-    setProposedChanges([]);
-    setCandidateSnapshots([]);
-    setApprovals({});
-    setIndexStatus(null);
-    setSearchResult(null);
+      const preflight = await preflightMastraBackend(parameters.mastraBaseUrl);
+      if (!preflight.ok) {
+        throw new Error(
+          `${preflight.message} (checked: ${preflight.checkedUrl})`,
+        );
+      }
 
-    if (normalized.searchMode !== "keyword") {
-      const ensureIndex = await invokeAppAction<
-        { locale: string; createIfMissing: boolean },
-        SemanticEnsureIndexResult
-      >(sdk, "semantic.ensureIndex", {
-        locale: defaultLocale,
-        createIfMissing: true,
-      });
-      setIndexStatus(ensureIndex);
-    }
+      setRunInput(normalized);
+      setApplyResults([]);
+      setProposedChanges([]);
+      setCandidateSnapshots([]);
+      setApprovals({});
+      setIndexStatus(null);
+      setSearchResult(null);
+      setRunError(null);
 
-    const prompt = `Prepare a ${normalized.searchMode} product rename scan for "${normalized.oldProductName}" -> "${normalized.newProductName}" in locale ${defaultLocale}.`;
+      if (normalized.searchMode !== "keyword" && hasAppActionApi(sdk)) {
+        const ensureIndex = await invokeAppAction<
+          { locale: string; createIfMissing: boolean },
+          SemanticEnsureIndexResult
+        >(sdk, "semantic.ensureIndex", {
+          locale: defaultLocale,
+          createIfMissing: true,
+        });
+        setIndexStatus(ensureIndex);
+      }
 
-    await sendMessage({
-      text: prompt,
-      metadata: {
-        runInput: normalized,
-      },
-    } as any);
+      const prompt = `Prepare a ${normalized.searchMode} product rename scan for "${normalized.oldProductName}" -> "${normalized.newProductName}" in locale ${defaultLocale}.`;
 
-    const discoveryResponse = await fetch(
-      new URL("/api/runs", parameters.mastraBaseUrl),
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(normalized),
-      },
-    );
-
-    if (!discoveryResponse.ok) {
-      throw new Error(`Failed to create run: ${discoveryResponse.statusText}`);
-    }
-
-    const runPayload = await discoveryResponse.json();
-    setRunId(runPayload.runId);
-
-    const semanticResponse = await invokeAppAction<
-      {
-        mode: "semantic" | "keyword" | "hybrid";
-        queries: string[];
-        limitPerQuery: number;
-      },
-      SemanticSearchResult
-    >(sdk, "semantic.search", {
-      mode: normalized.searchMode,
-      queries: runPayload.discoveryPlan.queries,
-      limitPerQuery: Math.min(parameters.maxCandidatesPerRun, 10),
-    });
-
-    setSearchResult(semanticResponse);
-
-    const snapshots = await fetchEntrySnapshots(
-      sdk,
-      semanticResponse.entryIds.slice(0, parameters.maxCandidatesPerRun),
-      normalized.defaultLocale,
-      normalized.contentTypeIds,
-    );
-
-    setCandidateSnapshots(snapshots);
-
-    const proposalResponse = await fetch(
-      new URL(`/api/runs/${runPayload.runId}/proposals`, parameters.mastraBaseUrl),
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          input: normalized,
-          candidates: snapshots,
-        }),
-      },
-    );
-
-    if (!proposalResponse.ok) {
-      throw new Error(`Failed to build proposals: ${proposalResponse.statusText}`);
-    }
-
-    const proposalPayload = await proposalResponse.json();
-    setProposedChanges(proposalPayload.proposedChanges);
-
-    setMessages((current) => [
-      ...current,
-      {
-        id: `summary-${runPayload.runId}`,
-        role: "assistant",
-        parts: [
-          {
-            type: "text",
-            text: `Found ${snapshots.length} candidate entries and proposed ${proposalPayload.proposedChanges.length} changes. Review them before applying.`,
+      const discoveryResponse = await fetch(
+        new URL("/api/runs", parameters.mastraBaseUrl),
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
           },
-        ],
-      },
-    ]);
+          body: JSON.stringify(normalized),
+        },
+      );
+
+      if (!discoveryResponse.ok) {
+        const detail = await discoveryResponse.text().catch(() => "");
+        throw new Error(
+          describeBackendHttpFailure(
+            discoveryResponse.status,
+            discoveryResponse.statusText,
+            detail,
+          ),
+        );
+      }
+
+      const runPayload = await discoveryResponse.json();
+      setRunId(runPayload.runId);
+      const searchQueries = [
+        ...(runPayload.discoveryPlan?.queries ?? []),
+        ...(runPayload.discoveryPlan?.aliases ?? []),
+        normalized.oldProductName,
+      ]
+        .map((query: string) => query.trim())
+        .filter(Boolean)
+        .filter(
+          (query: string, index: number, list: string[]) =>
+            list.findIndex(
+              (candidate) => candidate.toLowerCase() === query.toLowerCase(),
+            ) === index,
+        )
+        .slice(0, 10);
+
+      const semanticResponse = hasAppActionApi(sdk)
+        ? await invokeAppAction<
+            {
+              mode: "semantic" | "keyword" | "hybrid";
+              queries: string[];
+              limitPerQuery: number;
+            },
+            SemanticSearchResult
+          >(sdk, "semantic.search", {
+            mode: normalized.searchMode,
+            queries: searchQueries,
+            limitPerQuery: Math.min(parameters.maxCandidatesPerRun, 10),
+          })
+        : await fallbackKeywordSearch(
+            sdk,
+            searchQueries,
+            Math.min(parameters.maxCandidatesPerRun, 10),
+          );
+
+      setSearchResult(semanticResponse);
+
+      const snapshots = await fetchEntrySnapshots(
+        sdk,
+        semanticResponse.entryIds.slice(0, parameters.maxCandidatesPerRun),
+        normalized.defaultLocale,
+        normalized.contentTypeIds,
+      );
+      const variants = buildNameVariants(normalized.oldProductName);
+      const lexicalMatches = snapshots.filter((candidate) =>
+        candidateContainsVariant(candidate, variants),
+      );
+      const selectedSnapshots =
+        lexicalMatches.length > 0
+          ? lexicalMatches
+          : snapshots.slice(0, parameters.maxCandidatesPerRun);
+
+      setCandidateSnapshots(selectedSnapshots);
+
+      const proposalResponse = await fetch(
+        new URL(`/api/runs/${runPayload.runId}/proposals`, parameters.mastraBaseUrl),
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            input: normalized,
+            candidates: selectedSnapshots,
+          }),
+        },
+      );
+
+      if (!proposalResponse.ok) {
+        throw new Error(`Failed to build proposals: ${proposalResponse.statusText}`);
+      }
+
+      const proposalPayload = await proposalResponse.json();
+      setProposedChanges(proposalPayload.proposedChanges);
+
+      void sendMessage({
+        text: prompt,
+        metadata: {
+          runInput: normalized,
+        },
+      } as any).catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        setRunError((current) =>
+          current ??
+          `Run completed, but assistant chat streaming failed: ${message}`,
+        );
+      });
+
+      setMessages((current) => [
+        ...current,
+        {
+          id: `summary-${runPayload.runId}`,
+          role: "assistant",
+          parts: [
+            {
+              type: "text",
+              text: `Found ${selectedSnapshots.length} candidate entries and proposed ${proposalPayload.proposedChanges.length} changes. Review them before applying.`,
+            },
+          ],
+        },
+      ]);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setRunError(message);
+      setMessages((current) => [
+        ...current,
+        {
+          id: `error-${Date.now()}`,
+          role: "assistant",
+          parts: [
+            {
+              type: "text",
+              text: `Run setup failed: ${message}`,
+            },
+          ],
+        },
+      ]);
+    } finally {
+      setIsStartingRun(false);
+    }
   }
 
   async function applyApprovedChanges() {
@@ -310,6 +428,57 @@ export default function ChatWorkspace({
                   {warning}
                 </p>
               ))}
+            </AIChatArtifactMessage>
+          ) : null}
+
+          {runError ? (
+            <AIChatArtifactMessage title="Run error">
+              <p style={{ margin: 0 }}>{runError}</p>
+              <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
+                <button
+                  type="button"
+                  disabled={isStartingRun}
+                  onClick={() => {
+                    if (lastAttemptInput) {
+                      void startRenameRun(lastAttemptInput);
+                    }
+                  }}
+                >
+                  {isStartingRun ? "Retrying..." : "Retry run setup"}
+                </button>
+                <button
+                  type="button"
+                  disabled={isStartingRun}
+                  onClick={async () => {
+                    setRunError(null);
+                    const preflight = await preflightMastraBackend(
+                      parameters.mastraBaseUrl,
+                    );
+                    if (!preflight.ok) {
+                      setRunError(
+                        `${preflight.message} (checked: ${preflight.checkedUrl})`,
+                      );
+                      return;
+                    }
+
+                    setMessages((current) => [
+                      ...current,
+                      {
+                        id: `preflight-ok-${Date.now()}`,
+                        role: "assistant",
+                        parts: [
+                          {
+                            type: "text",
+                            text: `Backend reachable at ${preflight.checkedUrl}.`,
+                          },
+                        ],
+                      },
+                    ]);
+                  }}
+                >
+                  Recheck backend
+                </button>
+              </div>
             </AIChatArtifactMessage>
           ) : null}
 

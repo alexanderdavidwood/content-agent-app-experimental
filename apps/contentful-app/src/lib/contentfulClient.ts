@@ -9,6 +9,7 @@ import type {
   ProposedChange,
   RenameRunInput,
   RichTextNode,
+  SemanticSearchResult,
 } from "@contentful-rename/shared";
 import {
   appInstallationParametersSchema,
@@ -51,8 +52,49 @@ type SdkLike = {
   };
 };
 
+export type BackendPreflightIssueCode =
+  | "tunnel_unavailable"
+  | "network_auth_required"
+  | "http_error"
+  | "timeout"
+  | "backend_unreachable";
+
+export type BackendPreflightResult =
+  | {
+      ok: true;
+      checkedUrl: string;
+    }
+  | {
+      ok: false;
+      checkedUrl: string;
+      code: BackendPreflightIssueCode;
+      message: string;
+      status?: number;
+      detail?: string;
+    };
+
+const DEFAULT_INSTALLATION_PARAMETERS = {
+  mastraBaseUrl: "https://your-mastra-project.example.com",
+  allowedContentTypes: [],
+  maxDiscoveryQueries: 5,
+  maxCandidatesPerRun: 30,
+  defaultDryRun: true,
+} as const;
+
 export function getInstallationParameters(sdk: SdkLike) {
-  return appInstallationParametersSchema.parse(sdk.parameters.installation ?? {});
+  const candidate = {
+    ...DEFAULT_INSTALLATION_PARAMETERS,
+    ...(sdk.parameters.installation && typeof sdk.parameters.installation === "object"
+      ? (sdk.parameters.installation as Record<string, unknown>)
+      : {}),
+  };
+
+  const parsed = appInstallationParametersSchema.safeParse(candidate);
+  if (parsed.success) {
+    return parsed.data;
+  }
+
+  return appInstallationParametersSchema.parse(DEFAULT_INSTALLATION_PARAMETERS);
 }
 
 export function createCmaClient(sdk: SdkLike) {
@@ -299,4 +341,156 @@ export async function invokeAppAction<TInput, TResult>(
   }
 
   return invoke(actionName, payload) as Promise<TResult>;
+}
+
+export function hasAppActionApi(sdk: any): boolean {
+  const api = sdk.appAction ?? sdk.appActions ?? sdk.cma?.appAction;
+  const invoke = api?.callAppAction ?? api?.call ?? api?.run;
+  return typeof invoke === "function";
+}
+
+export function describeBackendHttpFailure(
+  status: number,
+  statusText: string,
+  detail: string,
+): string {
+  const normalizedDetail = detail.trim();
+
+  if (
+    status === 503 &&
+    normalizedDetail.toLowerCase().includes("tunnel unavailable")
+  ) {
+    return "Backend tunnel is unavailable (503). Restart your tunnel and update mastraBaseUrl if the URL changed.";
+  }
+
+  if (status === 511 || normalizedDetail.includes("Network Authentication Required")) {
+    return "Tunnel gateway requires authentication (511). Use a fresh tunnel URL and verify it from your browser before running.";
+  }
+
+  if (status === 404) {
+    return "Backend endpoint was not found (404). Ensure mastraBaseUrl points to the local API service that exposes /api/runs.";
+  }
+
+  return `Backend request failed (${status} ${statusText || "Unknown"}): ${normalizedDetail || "No response body."}`;
+}
+
+export async function preflightMastraBackend(
+  baseUrl: string,
+  timeoutMs = 6000,
+): Promise<BackendPreflightResult> {
+  const healthUrl = new URL("/health", baseUrl).toString();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(healthUrl, {
+      method: "GET",
+      signal: controller.signal,
+      headers: {
+        Accept: "application/json, text/plain;q=0.9,*/*;q=0.8",
+      },
+    });
+    const detail = await response.text().catch(() => "");
+
+    if (response.ok) {
+      return {
+        ok: true,
+        checkedUrl: healthUrl,
+      };
+    }
+
+    if (response.status === 503 && detail.toLowerCase().includes("tunnel unavailable")) {
+      return {
+        ok: false,
+        checkedUrl: healthUrl,
+        code: "tunnel_unavailable",
+        status: response.status,
+        detail,
+        message:
+          "Tunnel is unavailable (503). Restart your tunnel and update mastraBaseUrl if the URL changed.",
+      };
+    }
+
+    if (response.status === 511 || detail.includes("Network Authentication Required")) {
+      return {
+        ok: false,
+        checkedUrl: healthUrl,
+        code: "network_auth_required",
+        status: response.status,
+        detail,
+        message:
+          "Tunnel gateway requires authentication (511). Open the tunnel URL in your browser once or rotate to a new tunnel URL.",
+      };
+    }
+
+    return {
+      ok: false,
+      checkedUrl: healthUrl,
+      code: "http_error",
+      status: response.status,
+      detail,
+      message: describeBackendHttpFailure(response.status, response.statusText, detail),
+    };
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      return {
+        ok: false,
+        checkedUrl: healthUrl,
+        code: "timeout",
+        message: `Backend health check timed out after ${timeoutMs}ms.`,
+      };
+    }
+
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      ok: false,
+      checkedUrl: healthUrl,
+      code: "backend_unreachable",
+      detail: message,
+      message: `Backend is unreachable: ${message}`,
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+export async function fallbackKeywordSearch(
+  sdk: SdkLike,
+  queries: string[],
+  limitPerQuery: number,
+): Promise<SemanticSearchResult> {
+  const cma = createCmaClient(sdk) as any;
+  const allEntryIds = new Set<string>();
+  const queryHits: SemanticSearchResult["queryHits"] = [];
+  const warnings: string[] = [];
+
+  for (const query of queries.slice(0, 5)) {
+    try {
+      const response = await cma.entry.getMany({
+        query,
+        limit: limitPerQuery,
+      });
+
+      const ids = (response?.items ?? [])
+        .map((item: any) => item?.sys?.id)
+        .filter((id: unknown): id is string => typeof id === "string")
+        .slice(0, limitPerQuery);
+      ids.forEach((id: string) => allEntryIds.add(id));
+      queryHits.push({ query, entryIds: ids });
+    } catch (error) {
+      const warning = error instanceof Error ? error.message : String(error);
+      warnings.push(`Keyword fallback failed for "${query}": ${warning}`);
+      queryHits.push({
+        query,
+        entryIds: [],
+        warning,
+      });
+    }
+  }
+
+  return {
+    entryIds: [...allEntryIds],
+    queryHits,
+    warnings,
+  };
 }

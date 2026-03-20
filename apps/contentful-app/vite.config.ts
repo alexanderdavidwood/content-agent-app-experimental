@@ -40,6 +40,8 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react()],
+    // Contentful hosted bundles need relative asset paths.
+    base: "./",
     server: {
       host: "localhost",
       port,
