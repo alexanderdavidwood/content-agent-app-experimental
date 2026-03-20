@@ -1,0 +1,17 @@
+{
+  "files": [],
+  "references": [
+    {
+      "path": "./packages/shared"
+    },
+    {
+      "path": "./packages/f36-ai-components"
+    },
+    {
+      "path": "./apps/contentful-app"
+    },
+    {
+      "path": "./apps/mastra"
+    }
+  ]
+}

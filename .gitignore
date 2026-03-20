@@ -1,0 +1,14 @@
+node_modules
+dist
+build
+.DS_Store
+.env
+.env.local
+.env.*
+!.env.example
+.mastra
+coverage
+*.tsbuildinfo
+localhost*.pem
+localhost*.crt
+localhost*.key
