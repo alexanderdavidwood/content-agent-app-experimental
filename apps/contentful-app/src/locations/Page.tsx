@@ -5,11 +5,5 @@ import ChatWorkspace from "../components/chat/ChatWorkspace";
 export default function Page() {
   const sdk = useSDK<any>();
 
-  return (
-    <ChatWorkspace
-      sdk={sdk}
-      surfaceContext={{ surface: "page" }}
-      showReviewPanel
-    />
-  );
+  return <ChatWorkspace sdk={sdk} surfaceContext={{ surface: "page" }} />;
 }

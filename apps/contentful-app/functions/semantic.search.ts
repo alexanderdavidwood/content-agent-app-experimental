@@ -24,7 +24,7 @@ export default async function semanticSearch(
   const warnings: string[] = [];
   const entryIds = new Set<string>();
 
-  for (const query of input.queries.slice(0, 10)) {
+  for (const query of input.queries) {
     const sources = getSourcesForMode(input.mode);
     const combinedIds = new Set<string>();
     const queryWarnings: string[] = [];

@@ -1,47 +1,44 @@
+import { createUIMessageStreamResponse } from "ai";
+import { handleChatStream } from "@mastra/ai-sdk";
+import { RequestContext } from "@mastra/core/request-context";
 import { Hono } from "hono";
+import { z } from "zod";
 
-import { renameAgent } from "../agents/renameAgent";
+import { chatExecutionContextSchema } from "@contentful-rename/shared";
 
-function extractPrompt(messages: any[]): string {
-  const lastUserMessage = [...messages]
-    .reverse()
-    .find((message) => message.role === "user");
+import { mastra } from "../lib/mastra";
 
-  if (!lastUserMessage) {
-    return "Help the user plan a Contentful product rename run.";
-  }
-
-  if (typeof lastUserMessage.content === "string") {
-    return lastUserMessage.content;
-  }
-
-  const parts = lastUserMessage.parts ?? [];
-  return parts
-    .map((part: any) => (part.type === "text" ? part.text : ""))
-    .join("");
-}
+const chatStreamBodySchema = z
+  .object({
+    messages: z.array(z.any()).default([]),
+    requestContext: chatExecutionContextSchema,
+    memory: z.object({
+      thread: z.string().min(1),
+      resource: z.string().min(1),
+    }),
+    runId: z.string().optional(),
+    resumeData: z.record(z.string(), z.unknown()).optional(),
+    trigger: z.enum(["submit-message", "regenerate-message"]).optional(),
+  })
+  .passthrough();
 
 export const chatStreamRoute = new Hono().post("/", async (c) => {
-  const body = await c.req.json().catch(() => ({}));
-  const messages = Array.isArray(body.messages) ? body.messages : [];
-  const prompt = extractPrompt(messages);
-
   try {
-    const result = await (renameAgent as any).stream(prompt);
-    const encoder = new TextEncoder();
-
-    const stream = new ReadableStream({
-      async start(controller) {
-        for await (const chunk of result.textStream) {
-          controller.enqueue(encoder.encode(chunk));
-        }
-        controller.close();
+    const body = chatStreamBodySchema.parse(
+      await c.req.json().catch(() => ({})),
+    );
+    const stream = await handleChatStream({
+      mastra,
+      agentId: "contentful-product-rename-agent",
+      params: {
+        ...body,
+        requestContext: new RequestContext(Object.entries(body.requestContext)),
       },
     });
 
-    return new Response(stream, {
+    return createUIMessageStreamResponse({
+      stream: stream as any,
       headers: {
-        "Content-Type": "text/plain; charset=utf-8",
         "Cache-Control": "no-store",
       },
     });

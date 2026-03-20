@@ -35,10 +35,6 @@ export default function Agent() {
   }, [sdk]);
 
   return (
-    <ChatWorkspace
-      sdk={sdk}
-      surfaceContext={surfaceContext}
-      showReviewPanel={false}
-    />
+    <ChatWorkspace sdk={sdk} surfaceContext={surfaceContext} />
   );
 }

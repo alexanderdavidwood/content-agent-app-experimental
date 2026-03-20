@@ -24,26 +24,38 @@ type InputProps = Omit<TextareaHTMLAttributes<HTMLTextAreaElement>, "onSubmit"> 
 
 function boxStyle(kind: string): CSSProperties {
   const palette: Record<string, string> = {
-    conversation: "#f8fafc",
-    messageUser: "#dbeafe",
-    messageAssistant: "#f3f4f6",
-    artifact: "#fef3c7",
-    reasoning: "#ede9fe",
-    history: "#ecfccb",
+    conversation: "#f5f5f4",
+    messageUser: "#e7eef9",
+    messageAssistant: "#ffffff",
+    artifact: "#fff7ed",
+    reasoning: "#eef2ff",
+    history: "#f5f5f4",
     sidepanel: "#ffffff",
   };
 
   return {
     background: palette[kind] ?? "#ffffff",
-    border: "1px solid #d1d5db",
-    borderRadius: 12,
+    border: kind === "conversation" ? "1px solid #e7e5e4" : "1px solid #e4e4e7",
+    borderRadius: 20,
     padding: 16,
+    boxShadow:
+      kind === "conversation"
+        ? "0 24px 60px rgba(28, 25, 23, 0.06)"
+        : "0 12px 30px rgba(28, 25, 23, 0.04)",
   };
 }
 
 export function AIChatConversation({ children, className }: ChildrenProps) {
   return (
-    <section className={className} style={{ ...boxStyle("conversation"), display: "grid", gap: 16, minHeight: 480 }}>
+    <section
+      className={className}
+      style={{
+        ...boxStyle("conversation"),
+        display: "grid",
+        gap: 18,
+        minHeight: 560,
+      }}
+    >
       {children}
     </section>
   );
@@ -66,8 +78,18 @@ export function AIChatMessage({
   const kind = author === "user" ? "messageUser" : "messageAssistant";
 
   return (
-    <article className={className} style={{ ...boxStyle(kind), display: "grid", gap: 8 }}>
-      <strong style={{ fontSize: 12, textTransform: "uppercase", letterSpacing: "0.06em" }}>
+    <article
+      className={className}
+      style={{ ...boxStyle(kind), display: "grid", gap: 10 }}
+    >
+      <strong
+        style={{
+          fontSize: 11,
+          textTransform: "uppercase",
+          letterSpacing: "0.08em",
+          color: "#57534e",
+        }}
+      >
         {author}
       </strong>
       <div>{children}</div>
@@ -107,18 +129,31 @@ export function AIChatInput({
         {...props}
         value={value}
         style={{
-          minHeight: 120,
+          minHeight: 96,
           resize: "vertical",
           width: "100%",
-          borderRadius: 12,
-          border: "1px solid #cbd5e1",
-          padding: 12,
+          borderRadius: 18,
+          border: "1px solid #d6d3d1",
+          background: "#ffffff",
+          padding: 14,
           font: "inherit",
         }}
       />
       <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
         <div>{children}</div>
-        <button type="submit">Send</button>
+        <button
+          type="submit"
+          style={{
+            borderRadius: 999,
+            border: "1px solid #0f172a",
+            background: "#0f172a",
+            color: "#ffffff",
+            padding: "10px 16px",
+            cursor: "pointer",
+          }}
+        >
+          Send
+        </button>
       </div>
     </form>
   );

@@ -53,6 +53,22 @@ export const renameRunInputSchema = z.object({
   surfaceContext: agentSurfaceContextSchema.optional(),
 });
 
+export const renameChatRequestSchema = z.object({
+  oldProductName: z.string().min(1),
+  newProductName: z.string().min(1),
+  userNotes: z.string().optional(),
+});
+
+export const renameRunPhaseSchema = z.enum([
+  "parsing-request",
+  "planning-search",
+  "searching-contentful",
+  "reviewing-proposed-changes",
+  "applying-approved-changes",
+  "completed",
+  "error",
+]);
+
 export const proposedChangeSchema = z.object({
   changeId: z.string(),
   entryId: z.string(),
@@ -97,6 +113,14 @@ export const appInstallationParametersSchema = z.object({
   defaultDryRun: z.boolean().default(true),
 });
 
+export const chatExecutionContextSchema = z.object({
+  defaultLocale: z.string().min(1),
+  surfaceContext: agentSurfaceContextSchema.optional(),
+  allowedContentTypes: z.array(z.string()).default([]),
+  maxDiscoveryQueries: z.number().int().positive().max(5).default(5),
+  maxCandidatesPerRun: z.number().int().positive().max(100).default(30),
+});
+
 export const semanticEnsureIndexInputSchema = z.object({
   locale: z.string().min(1),
   createIfMissing: z.boolean().default(false),
@@ -127,16 +151,99 @@ export const semanticSearchResultSchema = z.object({
   warnings: z.array(z.string()).default([]),
 });
 
+export const renameRunSummarySchema = z.object({
+  runId: z.string(),
+  phase: renameRunPhaseSchema,
+  defaultLocale: z.string().min(1),
+  surface: z.enum(["page", "agent"]).optional(),
+  oldProductName: z.string().optional(),
+  newProductName: z.string().optional(),
+  candidateCount: z.number().int().nonnegative().default(0),
+  proposedChangeCount: z.number().int().nonnegative().default(0),
+  approvedChangeCount: z.number().int().nonnegative().default(0),
+  appliedCount: z.number().int().nonnegative().default(0),
+  failedCount: z.number().int().nonnegative().default(0),
+  lastError: z.string().optional(),
+});
+
+export const chatMessageMetadataSchema = z.object({
+  runId: z.string().optional(),
+  phase: renameRunPhaseSchema.optional(),
+});
+
+export const chatRunErrorSchema = z.object({
+  runId: z.string().optional(),
+  phase: renameRunPhaseSchema.optional(),
+  message: z.string().min(1),
+  retryable: z.boolean().default(false),
+});
+
+export const discoverCandidatesToolInputSchema = z.object({
+  runId: z.string(),
+  input: renameRunInputSchema,
+  discoveryPlan: discoveryQueryPlanSchema,
+  maxCandidatesPerRun: z.number().int().positive().max(100),
+});
+
+export const discoverCandidatesToolOutputSchema = z.object({
+  runId: z.string(),
+  indexStatus: semanticEnsureIndexResultSchema.nullable().optional(),
+  searchResult: semanticSearchResultSchema,
+  candidateSnapshots: z.array(candidateEntrySnapshotSchema),
+});
+
+export const draftProposalsToolInputSchema = z.object({
+  runId: z.string(),
+  input: renameRunInputSchema,
+  candidateSnapshots: z.array(candidateEntrySnapshotSchema),
+});
+
+export const draftProposalsToolOutputSchema = z.object({
+  runId: z.string(),
+  proposedChanges: z.array(proposedChangeSchema),
+});
+
+export const reviewProposalsToolInputSchema = z.object({
+  runId: z.string(),
+  input: renameRunInputSchema,
+  proposedChanges: z.array(proposedChangeSchema),
+  candidateSnapshots: z.array(candidateEntrySnapshotSchema),
+});
+
+export const reviewProposalsToolOutputSchema = z.object({
+  runId: z.string(),
+  approvals: z.array(approvedChangeSchema),
+  cancelled: z.boolean().default(false),
+});
+
+export const applyApprovedChangesToolInputSchema = z.object({
+  runId: z.string(),
+  input: renameRunInputSchema,
+  candidateSnapshots: z.array(candidateEntrySnapshotSchema),
+  proposedChanges: z.array(proposedChangeSchema),
+  approvals: z.array(approvedChangeSchema),
+});
+
+export const applyApprovedChangesToolOutputSchema = z.object({
+  runId: z.string(),
+  results: z.array(applyResultSchema),
+});
+
 export const chatArtifactSchema = z.object({
   id: z.string(),
   kind: z.enum([
+    "intake-hint",
     "quick-start",
     "scan-plan",
     "index-status",
+    "phase-status",
     "scan-status",
     "candidate-summary",
     "diff-review",
+    "review-batch",
     "apply-summary",
+    "completion-summary",
+    "error-summary",
   ]),
   title: z.string(),
   payload: z.record(z.string(), z.unknown()),
@@ -154,6 +261,8 @@ export type DiscoveryQueryPlan = z.infer<typeof discoveryQueryPlanSchema>;
 export type CandidateFieldSnapshot = z.infer<typeof candidateFieldSnapshotSchema>;
 export type CandidateEntrySnapshot = z.infer<typeof candidateEntrySnapshotSchema>;
 export type RenameRunInput = z.infer<typeof renameRunInputSchema>;
+export type RenameChatRequest = z.infer<typeof renameChatRequestSchema>;
+export type RenameRunPhase = z.infer<typeof renameRunPhaseSchema>;
 export type ProposedChange = z.infer<typeof proposedChangeSchema>;
 export type ApprovedChange = z.infer<typeof approvedChangeSchema>;
 export type ApplyOperation = z.infer<typeof applyOperationSchema>;
@@ -161,6 +270,7 @@ export type ApplyResult = z.infer<typeof applyResultSchema>;
 export type AppInstallationParameters = z.infer<
   typeof appInstallationParametersSchema
 >;
+export type ChatExecutionContext = z.infer<typeof chatExecutionContextSchema>;
 export type SemanticEnsureIndexInput = z.infer<
   typeof semanticEnsureIndexInputSchema
 >;
@@ -169,5 +279,32 @@ export type SemanticEnsureIndexResult = z.infer<
 >;
 export type SemanticSearchInput = z.infer<typeof semanticSearchInputSchema>;
 export type SemanticSearchResult = z.infer<typeof semanticSearchResultSchema>;
+export type RenameRunSummary = z.infer<typeof renameRunSummarySchema>;
+export type ChatMessageMetadata = z.infer<typeof chatMessageMetadataSchema>;
+export type ChatRunError = z.infer<typeof chatRunErrorSchema>;
+export type DiscoverCandidatesToolInput = z.infer<
+  typeof discoverCandidatesToolInputSchema
+>;
+export type DiscoverCandidatesToolOutput = z.infer<
+  typeof discoverCandidatesToolOutputSchema
+>;
+export type DraftProposalsToolInput = z.infer<
+  typeof draftProposalsToolInputSchema
+>;
+export type DraftProposalsToolOutput = z.infer<
+  typeof draftProposalsToolOutputSchema
+>;
+export type ReviewProposalsToolInput = z.infer<
+  typeof reviewProposalsToolInputSchema
+>;
+export type ReviewProposalsToolOutput = z.infer<
+  typeof reviewProposalsToolOutputSchema
+>;
+export type ApplyApprovedChangesToolInput = z.infer<
+  typeof applyApprovedChangesToolInputSchema
+>;
+export type ApplyApprovedChangesToolOutput = z.infer<
+  typeof applyApprovedChangesToolOutputSchema
+>;
 export type ChatArtifact = z.infer<typeof chatArtifactSchema>;
 export type ChatEnvelope = z.infer<typeof chatEnvelopeSchema>;

@@ -3,7 +3,6 @@ import { cors } from "hono/cors";
 import { Hono } from "hono";
 
 import { chatStreamRoute } from "./routes/chatStream";
-import { workflowRoute } from "./routes/workflowResume";
 import "./lib/mastra";
 
 const app = new Hono();
@@ -17,7 +16,11 @@ app.use(
   "*",
   cors({
     origin: origins.length > 0 ? origins : "*",
-    allowHeaders: ["Content-Type", "Authorization"],
+    allowHeaders: [
+      "Content-Type",
+      "Authorization",
+      "bypass-tunnel-reminder",
+    ],
     allowMethods: ["GET", "POST", "OPTIONS"],
   }),
 );
@@ -30,7 +33,6 @@ app.get("/health", (c) =>
 );
 
 app.route("/api/chat/stream", chatStreamRoute);
-app.route("/api", workflowRoute);
 
 export default app;
 

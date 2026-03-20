@@ -1,4 +1,4 @@
-import { createClient } from "contentful-management";
+import * as contentfulManagement from "contentful-management";
 
 import type {
   AgentSurfaceContext,
@@ -17,6 +17,7 @@ import {
 } from "@contentful-rename/shared";
 
 import { applyProposedRichTextChange, groupOperationsByEntry } from "./richTextPatch";
+import { normalizeSearchQueries, SEARCH_QUERY_CAP } from "./searchQueries";
 
 type EntryLike = {
   sys: {
@@ -81,6 +82,32 @@ const DEFAULT_INSTALLATION_PARAMETERS = {
   defaultDryRun: true,
 } as const;
 
+const TUNNEL_REMINDER_BYPASS_HEADER = "bypass-tunnel-reminder";
+
+function shouldBypassTunnelReminder(baseUrl: string) {
+  try {
+    const url = new URL(baseUrl);
+    return (
+      url.hostname.endsWith(".loca.lt") ||
+      url.hostname.endsWith(".localtunnel.me")
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function buildMastraRequestHeaders(
+  baseUrl: string,
+  headers: Record<string, string> = {},
+) {
+  return shouldBypassTunnelReminder(baseUrl)
+    ? {
+        ...headers,
+        [TUNNEL_REMINDER_BYPASS_HEADER]: "1",
+      }
+    : headers;
+}
+
 export function getInstallationParameters(sdk: SdkLike) {
   const candidate = {
     ...DEFAULT_INSTALLATION_PARAMETERS,
@@ -98,7 +125,7 @@ export function getInstallationParameters(sdk: SdkLike) {
 }
 
 export function createCmaClient(sdk: SdkLike) {
-  return createClient(
+  return contentfulManagement.createClient(
     { apiAdapter: sdk.cmaAdapter as never },
     {
       type: "plain",
@@ -368,7 +395,7 @@ export function describeBackendHttpFailure(
   }
 
   if (status === 404) {
-    return "Backend endpoint was not found (404). Ensure mastraBaseUrl points to the local API service that exposes /api/runs.";
+    return "Backend endpoint was not found (404). Ensure mastraBaseUrl points to the local API service that exposes /api/chat/stream.";
   }
 
   return `Backend request failed (${status} ${statusText || "Unknown"}): ${normalizedDetail || "No response body."}`;
@@ -386,9 +413,9 @@ export async function preflightMastraBackend(
     const response = await fetch(healthUrl, {
       method: "GET",
       signal: controller.signal,
-      headers: {
+      headers: buildMastraRequestHeaders(baseUrl, {
         Accept: "application/json, text/plain;q=0.9,*/*;q=0.8",
-      },
+      }),
     });
     const detail = await response.text().catch(() => "");
 
@@ -458,13 +485,20 @@ export async function fallbackKeywordSearch(
   sdk: SdkLike,
   queries: string[],
   limitPerQuery: number,
+  cmaOverride?: {
+    entry: {
+      getMany(args: { query: string; limit: number }): Promise<{
+        items?: Array<{ sys?: { id?: string } }>;
+      }>;
+    };
+  },
 ): Promise<SemanticSearchResult> {
-  const cma = createCmaClient(sdk) as any;
+  const cma = (cmaOverride ?? createCmaClient(sdk)) as any;
   const allEntryIds = new Set<string>();
   const queryHits: SemanticSearchResult["queryHits"] = [];
   const warnings: string[] = [];
 
-  for (const query of queries.slice(0, 5)) {
+  for (const query of normalizeSearchQueries(queries, SEARCH_QUERY_CAP)) {
     try {
       const response = await cma.entry.getMany({
         query,
