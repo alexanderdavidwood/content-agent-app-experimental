@@ -24,7 +24,7 @@ Use this checklist before making changes, while debugging, and before handoff.
 - [ ] Validate tunnel URL still alive (`/health`).
 - [ ] If `503 Tunnel Unavailable`, restart tunnel and update config URL.
 - [ ] If `511 Network Authentication Required`, rotate tunnel URL and retry.
-- [ ] Verify `/api/chat/stream` responds with curl before retesting in UI.
+- [ ] Verify `/chat/stream` responds with curl before retesting in UI.
 
 ## 4) Search Quality Debug
 
@@ -57,7 +57,7 @@ Use this checklist before making changes, while debugging, and before handoff.
 
 ## 7) Optional Backlog (Future Improvements)
 
-- [ ] Replace tunnel dependency with stable hosted backend for `/api/chat/stream`.
+- [ ] Replace tunnel dependency with stable hosted backend for `/chat/stream`.
 - [ ] Add automatic retry/backoff for transient tunnel failures.
 - [ ] Add telemetry around run failure reasons in frontend.
 - [ ] Consider migration to native Mastra Cloud endpoint model (if replacing custom Hono routes).

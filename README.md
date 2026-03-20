@@ -27,7 +27,7 @@ Use this flow when validating the interactive rename assistant against a local M
    - Copy the generated URL (example: `https://example.loca.lt`).
 3. In Contentful app config, set:
    - `mastraBaseUrl=<your tunnel URL>`
-4. Keep both processes running while testing. The Contentful app talks to the backend over `/api/chat/stream`.
+4. Keep both processes running while testing. The Contentful app talks to the backend over `/chat/stream`.
 
 ### Automated search validation
 
@@ -53,7 +53,7 @@ Use this flow when validating the interactive rename assistant against a local M
 - Backend health:
   - `curl -i <mastraBaseUrl>/health`
 - Chat stream handshake:
-  - `curl -i -X POST <mastraBaseUrl>/api/chat/stream -H "Content-Type: application/json" --data '{"messages":[{"id":"msg-1","role":"user","parts":[{"type":"text","text":"Rename \"Acme\" to \"Acme New\" and search marketing pages first."}]}],"requestContext":{"defaultLocale":"en-US","allowedContentTypes":[],"maxDiscoveryQueries":5,"maxCandidatesPerRun":30},"memory":{"thread":"local-smoke-thread","resource":"contentful-space-local"}}'`
+  - `curl -i -X POST <mastraBaseUrl>/chat/stream -H "Content-Type: application/json" --data '{"messages":[{"id":"msg-1","role":"user","parts":[{"type":"text","text":"Rename \"Acme\" to \"Acme New\" and search marketing pages first."}]}],"requestContext":{"defaultLocale":"en-US","allowedContentTypes":[],"maxDiscoveryQueries":5,"maxCandidatesPerRun":30},"memory":{"thread":"local-smoke-thread","resource":"contentful-space-local"}}'`
 
 ### Common tunnel failures
 

@@ -32,6 +32,7 @@ app.get("/health", (c) =>
   }),
 );
 
+app.route("/chat/stream", chatStreamRoute);
 app.route("/api/chat/stream", chatStreamRoute);
 
 export default app;

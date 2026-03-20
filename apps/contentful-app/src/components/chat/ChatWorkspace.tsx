@@ -456,6 +456,7 @@ export default function ChatWorkspace({
     },
     memory: chatMemory,
   });
+  const baseUrlRef = useRef(parameters.mastraBaseUrl);
   contextRef.current = {
     requestContext: {
       defaultLocale,
@@ -466,9 +467,13 @@ export default function ChatWorkspace({
     },
     memory: chatMemory,
   };
+  baseUrlRef.current = parameters.mastraBaseUrl;
 
   const [transport] = useState(() =>
-    createRenameChatTransport(parameters.mastraBaseUrl, () => contextRef.current),
+    createRenameChatTransport(
+      () => baseUrlRef.current,
+      () => contextRef.current,
+    ),
   );
   const [input, setInput] = useState("");
   const [reviewToolCallId, setReviewToolCallId] = useState<string | null>(null);
@@ -486,7 +491,7 @@ export default function ChatWorkspace({
     typeof window === "undefined" ? false : window.innerWidth < 1120,
   );
 
-  const { messages, sendMessage, status, error, stop, setMessages } =
+  const { messages, sendMessage, status, error, stop, setMessages, clearError } =
     useChat<RenameChatMessage>({
       transport,
       dataPartSchemas: renameChatDataPartSchemas as any,
@@ -778,6 +783,9 @@ export default function ChatWorkspace({
       <AIChatHistory>
         <p style={{ margin: 0 }}>Locale: {defaultLocale}</p>
         <p style={{ margin: 0 }}>Surface: {surfaceContext.surface}</p>
+        <p style={{ margin: 0, wordBreak: "break-all" }}>
+          Backend: {parameters.mastraBaseUrl}
+        </p>
         <p style={{ margin: 0 }}>Thread: {chatMemory.thread}</p>
         <p style={{ margin: 0 }}>
           Status:{" "}
@@ -800,6 +808,11 @@ export default function ChatWorkspace({
       {clientActionError ? (
         <AIChatArtifactMessage title="Latest issue">
           <p style={{ margin: 0 }}>{clientActionError.message}</p>
+        </AIChatArtifactMessage>
+      ) : null}
+      {!clientActionError && error ? (
+        <AIChatArtifactMessage title="Latest issue">
+          <p style={{ margin: 0 }}>{error.message}</p>
         </AIChatArtifactMessage>
       ) : null}
     </AIChatSidePanel>
@@ -832,6 +845,7 @@ export default function ChatWorkspace({
               activeSuspensionToolCallId={activeSuspension?.toolCallId ?? null}
               clientActionError={clientActionError}
               onRetryClientAction={() => {
+                clearError();
                 setClientActionError(null);
                 if (activeSuspension) {
                   autoResumingToolCallIdsRef.current.delete(
@@ -871,6 +885,7 @@ export default function ChatWorkspace({
               return;
             }
 
+            clearError();
             void sendMessage({ text: input });
             setInput("");
           }}

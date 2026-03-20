@@ -395,7 +395,7 @@ export function describeBackendHttpFailure(
   }
 
   if (status === 404) {
-    return "Backend endpoint was not found (404). Ensure mastraBaseUrl points to the local API service that exposes /api/chat/stream.";
+    return "Backend endpoint was not found (404). Ensure mastraBaseUrl points to the Mastra service that exposes /chat/stream.";
   }
 
   return `Backend request failed (${status} ${statusText || "Unknown"}): ${normalizedDetail || "No response body."}`;
