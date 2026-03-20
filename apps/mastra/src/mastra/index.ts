@@ -1,1 +1,1 @@
-export { mastra } from "../lib/mastra";
+export { mastra } from "../index";
