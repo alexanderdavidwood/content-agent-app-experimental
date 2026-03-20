@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { fallbackKeywordSearch } from "./contentfulClient";
+import { fallbackKeywordSearch, performCandidateSearch } from "./contentfulClient";
 
 test("fallbackKeywordSearch truncates duplicate porter queries with the shared cap", async () => {
   const seenQueries: string[] = [];
@@ -80,4 +80,48 @@ test("fallbackKeywordSearch records scoped warnings when a porter query fails", 
   assert.deepEqual(result.warnings, ['Keyword fallback failed for "porter docs": boom']);
   assert.equal(result.queryHits[1]?.warning, "boom");
   assert.deepEqual(result.queryHits[1]?.entryIds, []);
+});
+
+test("performCandidateSearch falls back to keyword search when semantic app actions fail", async () => {
+  const calls: string[] = [];
+  const result = await performCandidateSearch(
+    {
+      cmaAdapter: {},
+      ids: { space: "space-id" },
+      parameters: {},
+      appAction: {
+        async callAppAction(actionName: string) {
+          calls.push(actionName);
+          throw new Error(`${actionName} unavailable`);
+        },
+      },
+    } as any,
+    {
+      defaultLocale: "en-US",
+      searchMode: "semantic",
+      queries: ["porter"],
+      limitPerQuery: 2,
+    },
+    {
+      entry: {
+        async getMany({ query, limit }) {
+          return {
+            items: Array.from({ length: limit }, (_, index) => ({
+              sys: {
+                id: `${query}-${index + 1}`,
+              },
+            })),
+          };
+        },
+      },
+    },
+  );
+
+  assert.deepEqual(calls, ["semantic.ensureIndex", "semantic.search"]);
+  assert.equal(result.indexStatus?.status, "UNSUPPORTED");
+  assert.deepEqual(result.searchResult.entryIds, ["porter-1", "porter-2"]);
+  assert.match(
+    result.searchResult.warnings.at(-1) ?? "",
+    /fell back to keyword search/i,
+  );
 });

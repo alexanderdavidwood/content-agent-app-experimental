@@ -23,11 +23,9 @@ import type {
 import {
   applyOperations,
   buildApplyOperations,
-  fallbackKeywordSearch,
   fetchEntrySnapshots,
   getInstallationParameters,
-  hasAppActionApi,
-  invokeAppAction,
+  performCandidateSearch,
 } from "../../lib/contentfulClient";
 import {
   approveSafeChanges,
@@ -505,14 +503,6 @@ export default function ChatWorkspace({
     toolInput: DiscoverCandidatesToolInput,
   ): Promise<DiscoverCandidatesToolOutput> {
     const renameInput = toolInput.input;
-    let indexStatus: DiscoverCandidatesToolOutput["indexStatus"] = null;
-
-    if (renameInput.searchMode !== "keyword" && hasAppActionApi(sdk)) {
-      indexStatus = await invokeAppAction(sdk, "semantic.ensureIndex", {
-        locale: renameInput.defaultLocale,
-        createIfMissing: true,
-      });
-    }
 
     const searchQueries = buildSearchQueries({
       discoveryQueries: toolInput.discoveryPlan.queries,
@@ -520,24 +510,15 @@ export default function ChatWorkspace({
       maxDiscoveryQueries: parameters.maxDiscoveryQueries,
     });
 
-    const searchResult: SemanticSearchResult = hasAppActionApi(sdk)
-      ? await invokeAppAction<
-          {
-            mode: "semantic" | "keyword" | "hybrid";
-            queries: string[];
-            limitPerQuery: number;
-          },
-          SemanticSearchResult
-        >(sdk, "semantic.search", {
-          mode: renameInput.searchMode,
-          queries: searchQueries,
-          limitPerQuery: Math.min(toolInput.maxCandidatesPerRun, 10),
-        })
-      : await fallbackKeywordSearch(
-          sdk,
-          searchQueries,
-          Math.min(toolInput.maxCandidatesPerRun, 10),
-        );
+    const { indexStatus, searchResult }: {
+      indexStatus: DiscoverCandidatesToolOutput["indexStatus"];
+      searchResult: SemanticSearchResult;
+    } = await performCandidateSearch(sdk, {
+      defaultLocale: renameInput.defaultLocale,
+      searchMode: renameInput.searchMode,
+      queries: searchQueries,
+      limitPerQuery: Math.min(toolInput.maxCandidatesPerRun, 10),
+    });
 
     const snapshots = await fetchEntrySnapshots(
       sdk,

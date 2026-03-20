@@ -9,6 +9,7 @@ import type {
   ProposedChange,
   RenameRunInput,
   RichTextNode,
+  SemanticEnsureIndexResult,
   SemanticSearchResult,
 } from "@contentful-rename/shared";
 import {
@@ -50,6 +51,14 @@ type SdkLike = {
   };
   parameters: {
     installation?: unknown;
+  };
+};
+
+type KeywordSearchClientOverride = {
+  entry: {
+    getMany(args: { query: string; limit: number }): Promise<{
+      items?: Array<{ sys?: { id?: string } }>;
+    }>;
   };
 };
 
@@ -376,6 +385,90 @@ export function hasAppActionApi(sdk: any): boolean {
   return typeof invoke === "function";
 }
 
+function stringifyAppActionError(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+export async function performCandidateSearch(
+  sdk: SdkLike,
+  input: {
+    defaultLocale: string;
+    searchMode: "semantic" | "keyword" | "hybrid";
+    queries: string[];
+    limitPerQuery: number;
+  },
+  cmaOverride?: KeywordSearchClientOverride,
+): Promise<{
+  indexStatus: SemanticEnsureIndexResult | null;
+  searchResult: SemanticSearchResult;
+}> {
+  const { defaultLocale, searchMode, queries, limitPerQuery } = input;
+  let indexStatus: SemanticEnsureIndexResult | null = null;
+
+  if (searchMode !== "keyword" && hasAppActionApi(sdk)) {
+    try {
+      indexStatus = await invokeAppAction(sdk as any, "semantic.ensureIndex", {
+        locale: defaultLocale,
+        createIfMissing: true,
+      });
+    } catch (error) {
+      indexStatus = {
+        status: "UNSUPPORTED",
+        locale: defaultLocale,
+        warning: `semantic.ensureIndex failed; falling back to keyword search if needed: ${stringifyAppActionError(error)}`,
+      };
+    }
+  }
+
+  if (!hasAppActionApi(sdk)) {
+    return {
+      indexStatus,
+      searchResult: await fallbackKeywordSearch(
+        sdk,
+        queries,
+        limitPerQuery,
+        cmaOverride,
+      ),
+    };
+  }
+
+  try {
+    return {
+      indexStatus,
+      searchResult: await invokeAppAction<
+        {
+          mode: "semantic" | "keyword" | "hybrid";
+          queries: string[];
+          limitPerQuery: number;
+        },
+        SemanticSearchResult
+      >(sdk as any, "semantic.search", {
+        mode: searchMode,
+        queries,
+        limitPerQuery,
+      }),
+    };
+  } catch (error) {
+    const searchResult = await fallbackKeywordSearch(
+      sdk,
+      queries,
+      limitPerQuery,
+      cmaOverride,
+    );
+
+    return {
+      indexStatus,
+      searchResult: {
+        ...searchResult,
+        warnings: [
+          ...searchResult.warnings,
+          `${searchMode} search App Action failed; fell back to keyword search: ${stringifyAppActionError(error)}`,
+        ],
+      },
+    };
+  }
+}
+
 export function describeBackendHttpFailure(
   status: number,
   statusText: string,
@@ -485,13 +578,7 @@ export async function fallbackKeywordSearch(
   sdk: SdkLike,
   queries: string[],
   limitPerQuery: number,
-  cmaOverride?: {
-    entry: {
-      getMany(args: { query: string; limit: number }): Promise<{
-        items?: Array<{ sys?: { id?: string } }>;
-      }>;
-    };
-  },
+  cmaOverride?: KeywordSearchClientOverride,
 ): Promise<SemanticSearchResult> {
   const cma = (cmaOverride ?? createCmaClient(sdk)) as any;
   const allEntryIds = new Set<string>();
