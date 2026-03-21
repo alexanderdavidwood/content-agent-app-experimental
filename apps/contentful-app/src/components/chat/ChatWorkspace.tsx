@@ -10,14 +10,21 @@ import {
   AIChatReasoning,
   AIChatSidePanel,
 } from "@contentful/f36-ai-components";
-import type {
-  AgentSurfaceContext,
-  ApplyApprovedChangesToolInput,
-  ApplyApprovedChangesToolOutput,
-  DiscoverCandidatesToolInput,
-  DiscoverCandidatesToolOutput,
-  ReviewProposalsToolInput,
-  SemanticSearchResult,
+import {
+  createChatDebugError,
+  parseChatDebugError,
+  type AgentSurfaceContext,
+  type AgentTraceData,
+  type AgentTraceStep,
+  type AgentTraceToolCall,
+  type AgentTraceToolResult,
+  type ApplyApprovedChangesToolInput,
+  type ApplyApprovedChangesToolOutput,
+  type ChatDebugError,
+  type DiscoverCandidatesToolInput,
+  type DiscoverCandidatesToolOutput,
+  type ReviewProposalsToolInput,
+  type SemanticSearchResult,
 } from "@contentful-rename/shared";
 
 import {
@@ -33,16 +40,22 @@ import {
   buildReviewOutput,
   buildWelcomeMessage,
   countApproved,
+  getLatestAgentTrace,
   getLatestSuspendedToolCall,
   getLatestToolPart,
   getMessageText,
+  getReasoningText,
+  getToolParts,
   getToolError,
   parseApplyApprovedChangesOutput,
   parseDiscoverCandidatesOutput,
   type ReviewDraftMap,
+  type ToolPartSummary,
 } from "../../lib/chatRuntime";
 import { createRenameChatTransport } from "../../lib/chatTransport";
 import {
+  LEGACY_TOOL_CALL_SUSPENDED_PART_TYPE,
+  TOOL_CALL_SUSPENDED_PART_TYPE,
   type RenameChatRequestBody,
   renameChatDataPartSchemas,
   toolCallSuspendedDataSchema,
@@ -68,7 +81,7 @@ type ReviewHandlers = {
 type ClientActionError = {
   toolCallId: string;
   toolName: string;
-  message: string;
+  error: ChatDebugError;
 };
 
 function escapeRegex(value: string) {
@@ -150,6 +163,176 @@ function clientActionLabel(toolName: string | null) {
   }
 }
 
+function phaseForToolName(toolName: string | null) {
+  switch (toolName) {
+    case "discoverCandidatesClient":
+      return "searching-contentful" as const;
+    case "reviewProposalsClient":
+      return "reviewing-proposed-changes" as const;
+    case "applyApprovedChangesClient":
+      return "applying-approved-changes" as const;
+    default:
+      return "error" as const;
+  }
+}
+
+function stringifyForDisplay(value: unknown) {
+  if (value === undefined) {
+    return null;
+  }
+
+  if (typeof value === "string") {
+    return value;
+  }
+
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function toolStateLabel(state: string) {
+  switch (state) {
+    case "input-available":
+      return "Input ready";
+    case "input-streaming":
+      return "Input streaming";
+    case "output-available":
+      return "Completed";
+    case "output-error":
+      return "Failed";
+    case "output-denied":
+      return "Denied";
+    default:
+      return state;
+  }
+}
+
+function toolStateColors(state: string) {
+  switch (state) {
+    case "output-available":
+      return {
+        background: "#dcfce7",
+        color: "#166534",
+      };
+    case "output-error":
+      return {
+        background: "#fee2e2",
+        color: "#991b1b",
+      };
+    case "input-available":
+    case "input-streaming":
+      return {
+        background: "#dbeafe",
+        color: "#1d4ed8",
+      };
+    default:
+      return {
+        background: "#e4e4e7",
+        color: "#3f3f46",
+      };
+  }
+}
+
+function StatusBadge({ label, state }: { label: string; state: string }) {
+  const colors = toolStateColors(state);
+
+  return (
+    <span
+      style={{
+        borderRadius: 999,
+        padding: "4px 10px",
+        fontSize: 12,
+        fontWeight: 600,
+        background: colors.background,
+        color: colors.color,
+      }}
+    >
+      {label}
+    </span>
+  );
+}
+
+function normalizeDebugError(
+  error: unknown,
+  fallback?: Partial<ChatDebugError>,
+): ChatDebugError | null {
+  if (!error) {
+    return null;
+  }
+
+  const parsed = parseChatDebugError(error);
+  if (parsed) {
+    return {
+      ...parsed,
+      ...fallback,
+      details: [
+        ...parsed.details,
+        ...((fallback?.details as string[] | undefined) ?? []),
+      ],
+    };
+  }
+
+  return createChatDebugError(error, fallback);
+}
+
+function extractTraceToolName(
+  candidate: AgentTraceToolCall | AgentTraceToolResult,
+) {
+  return (
+    candidate.toolName ??
+    ((candidate.payload as any)?.toolName as string | undefined) ??
+    "unknown-tool"
+  );
+}
+
+function extractTraceToolCallId(
+  candidate: AgentTraceToolCall | AgentTraceToolResult,
+) {
+  return (
+    candidate.toolCallId ??
+    ((candidate.payload as any)?.toolCallId as string | undefined) ??
+    "unknown-call"
+  );
+}
+
+function extractTraceToolInput(candidate: AgentTraceToolCall) {
+  return candidate.args ?? (candidate.payload as any)?.args;
+}
+
+function extractTraceToolOutput(candidate: AgentTraceToolResult) {
+  return (
+    candidate.result ??
+    candidate.output ??
+    (candidate.payload as any)?.result ??
+    (candidate.payload as any)?.output
+  );
+}
+
+function extractTraceToolError(candidate: AgentTraceToolResult) {
+  const direct =
+    candidate.errorText ?? ((candidate.payload as any)?.errorText as string | undefined);
+
+  if (direct) {
+    return direct;
+  }
+
+  if (candidate.isError) {
+    return stringifyForDisplay(extractTraceToolOutput(candidate));
+  }
+
+  return null;
+}
+
+function traceStepCalls(step: AgentTraceStep) {
+  return [...step.staticToolCalls, ...step.dynamicToolCalls];
+}
+
+function traceStepResults(step: AgentTraceStep) {
+  return [...step.staticToolResults, ...step.dynamicToolResults];
+}
+
 function suspendedToolFromMessage(message: RenameChatMessage | undefined) {
   if (!message || message.role !== "assistant") {
     return null;
@@ -157,7 +340,11 @@ function suspendedToolFromMessage(message: RenameChatMessage | undefined) {
 
   for (let index = message.parts.length - 1; index >= 0; index -= 1) {
     const part = message.parts[index];
-    if (part.type === "data-toolCallSuspended") {
+    const partType = String(part.type);
+    if (
+      partType === TOOL_CALL_SUSPENDED_PART_TYPE ||
+      partType === LEGACY_TOOL_CALL_SUSPENDED_PART_TYPE
+    ) {
       return toolCallSuspendedDataSchema.parse((part as any).data);
     }
   }
@@ -310,6 +497,266 @@ function ReviewToolCard({
   );
 }
 
+function DebugErrorCard({
+  title,
+  error,
+  actionLabel,
+  onAction,
+}: {
+  title: string;
+  error: ChatDebugError;
+  actionLabel?: string;
+  onAction?: () => void;
+}) {
+  return (
+    <AIChatArtifactMessage title={title}>
+      <div style={{ display: "grid", gap: 10 }}>
+        <p style={{ margin: 0 }}>{error.message}</p>
+        {(error.code || error.phase || error.toolName) && (
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {error.code ? (
+              <StatusBadge label={error.code} state="output-error" />
+            ) : null}
+            {error.phase ? (
+              <StatusBadge label={error.phase} state="output-error" />
+            ) : null}
+            {error.toolName ? (
+              <StatusBadge label={error.toolName} state="output-error" />
+            ) : null}
+          </div>
+        )}
+        {error.details.length > 0 ? (
+          <details>
+            <summary>Debug details</summary>
+            <ul style={{ margin: "8px 0 0", paddingLeft: 18 }}>
+              {error.details.map((detail) => (
+                <li key={detail}>{detail}</li>
+              ))}
+            </ul>
+          </details>
+        ) : null}
+        {error.stack ? (
+          <details>
+            <summary>Stack trace</summary>
+            <pre
+              style={{
+                margin: "8px 0 0",
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-word",
+                fontSize: 12,
+              }}
+            >
+              {error.stack}
+            </pre>
+          </details>
+        ) : null}
+        {actionLabel && onAction ? (
+          <button type="button" onClick={onAction}>
+            {actionLabel}
+          </button>
+        ) : null}
+      </div>
+    </AIChatArtifactMessage>
+  );
+}
+
+function ToolActivityCard({
+  toolParts,
+}: {
+  toolParts: ToolPartSummary[];
+}) {
+  if (toolParts.length === 0) {
+    return null;
+  }
+
+  return (
+    <AIChatArtifactMessage title="Tool activity">
+      <div style={{ display: "grid", gap: 10 }}>
+        {toolParts.map((toolPart) => {
+          const input = stringifyForDisplay(toolPart.input);
+          const output = stringifyForDisplay(toolPart.output);
+          const parsedError = normalizeDebugError(toolPart.errorText, {
+            toolName: toolPart.type.slice(5),
+          });
+
+          return (
+            <details key={`${toolPart.toolCallId}:${toolPart.state}`} open={toolParts.length === 1}>
+              <summary style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <strong>{toolPart.type.slice(5)}</strong>
+                <StatusBadge
+                  label={toolStateLabel(toolPart.state)}
+                  state={toolPart.state}
+                />
+              </summary>
+              <div style={{ display: "grid", gap: 8, marginTop: 10 }}>
+                <p style={{ margin: 0, fontSize: 12, color: "#57534e" }}>
+                  Tool call id: {toolPart.toolCallId}
+                </p>
+                {input ? (
+                  <details>
+                    <summary>Input</summary>
+                    <pre
+                      style={{
+                        margin: "8px 0 0",
+                        whiteSpace: "pre-wrap",
+                        wordBreak: "break-word",
+                        fontSize: 12,
+                      }}
+                    >
+                      {input}
+                    </pre>
+                  </details>
+                ) : null}
+                {output ? (
+                  <details>
+                    <summary>Output</summary>
+                    <pre
+                      style={{
+                        margin: "8px 0 0",
+                        whiteSpace: "pre-wrap",
+                        wordBreak: "break-word",
+                        fontSize: 12,
+                      }}
+                    >
+                      {output}
+                    </pre>
+                  </details>
+                ) : null}
+                {parsedError ? (
+                  <DebugErrorCard title="Tool error" error={parsedError} />
+                ) : null}
+              </div>
+            </details>
+          );
+        })}
+      </div>
+    </AIChatArtifactMessage>
+  );
+}
+
+function AgentTracePanel({ trace }: { trace: AgentTraceData | null }) {
+  if (!trace) {
+    return null;
+  }
+
+  return (
+    <AIChatArtifactMessage title="Execution trace">
+      <div style={{ display: "grid", gap: 10 }}>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          {trace.status ? (
+            <StatusBadge
+              label={trace.status === "finished" ? "Run finished" : "Run active"}
+              state={trace.status === "finished" ? "output-available" : "input-available"}
+            />
+          ) : null}
+          {trace.response?.modelId ? (
+            <StatusBadge label={trace.response.modelId} state="input-available" />
+          ) : null}
+          {trace.finishReason ? (
+            <StatusBadge label={trace.finishReason} state="input-available" />
+          ) : null}
+        </div>
+        {trace.steps.length > 0 ? (
+          <div style={{ display: "grid", gap: 10 }}>
+            {trace.steps.map((step, index) => {
+              const calls = traceStepCalls(step);
+              const results = traceStepResults(step);
+              const title =
+                calls.length > 0
+                  ? calls.map((call) => extractTraceToolName(call)).join(", ")
+                  : step.stepType ?? `Step ${index + 1}`;
+
+              return (
+                <details key={`${index}-${title}`} open={index === trace.steps.length - 1}>
+                  <summary>
+                    Step {index + 1}: {title}
+                  </summary>
+                  <div style={{ display: "grid", gap: 8, marginTop: 10 }}>
+                    {step.reasoningText ? (
+                      <AIChatReasoning title="Thinking summary">
+                        <p style={{ margin: 0, whiteSpace: "pre-wrap" }}>
+                          {step.reasoningText}
+                        </p>
+                      </AIChatReasoning>
+                    ) : null}
+                    {step.warnings.length > 0 ? (
+                      <details>
+                        <summary>Warnings</summary>
+                        <pre
+                          style={{
+                            margin: "8px 0 0",
+                            whiteSpace: "pre-wrap",
+                            wordBreak: "break-word",
+                            fontSize: 12,
+                          }}
+                        >
+                          {stringifyForDisplay(step.warnings)}
+                        </pre>
+                      </details>
+                    ) : null}
+                    {calls.map((call) => (
+                      <details key={`call-${extractTraceToolCallId(call)}`}>
+                        <summary>Call: {extractTraceToolName(call)}</summary>
+                        <pre
+                          style={{
+                            margin: "8px 0 0",
+                            whiteSpace: "pre-wrap",
+                            wordBreak: "break-word",
+                            fontSize: 12,
+                          }}
+                        >
+                          {stringifyForDisplay(extractTraceToolInput(call))}
+                        </pre>
+                      </details>
+                    ))}
+                    {results.map((result) => {
+                      const errorText = extractTraceToolError(result);
+
+                      return (
+                        <details key={`result-${extractTraceToolCallId(result)}`}>
+                          <summary>
+                            Result: {extractTraceToolName(result)}
+                            {errorText ? " (failed)" : ""}
+                          </summary>
+                          {errorText ? (
+                            <DebugErrorCard
+                              title="Tool result error"
+                              error={createChatDebugError(errorText, {
+                                toolName: extractTraceToolName(result),
+                              })}
+                            />
+                          ) : (
+                            <pre
+                              style={{
+                                margin: "8px 0 0",
+                                whiteSpace: "pre-wrap",
+                                wordBreak: "break-word",
+                                fontSize: 12,
+                              }}
+                            >
+                              {stringifyForDisplay(extractTraceToolOutput(result))}
+                            </pre>
+                          )}
+                        </details>
+                      );
+                    })}
+                  </div>
+                </details>
+              );
+            })}
+          </div>
+        ) : trace.reasoning.length > 0 ? (
+          <AIChatReasoning title="Thinking summary">
+            <p style={{ margin: 0, whiteSpace: "pre-wrap" }}>
+              {trace.reasoning.join("")}
+            </p>
+          </AIChatReasoning>
+        ) : null}
+      </div>
+    </AIChatArtifactMessage>
+  );
+}
+
 function ToolStatusCard({
   message,
   activeSuspensionToolCallId,
@@ -327,21 +774,17 @@ function ToolStatusCard({
 
   if (clientActionError && suspendedTool?.toolCallId === clientActionError.toolCallId) {
     return (
-      <AIChatArtifactMessage title="Client step failed">
-        <p style={{ margin: 0 }}>{clientActionError.message}</p>
-        <button type="button" style={{ marginTop: 12 }} onClick={onRetryClientAction}>
-          Retry step
-        </button>
-      </AIChatArtifactMessage>
+      <DebugErrorCard
+        title="Client step failed"
+        error={clientActionError.error}
+        actionLabel="Retry step"
+        onAction={onRetryClientAction}
+      />
     );
   }
 
   if (toolError) {
-    return (
-      <AIChatArtifactMessage title="Step failed">
-        <p style={{ margin: 0 }}>{toolError.message}</p>
-      </AIChatArtifactMessage>
-    );
+    return <DebugErrorCard title="Step failed" error={toolError} />;
   }
 
   if (
@@ -403,6 +846,8 @@ function ConversationMessage({
   onRetryClientAction: () => void;
 }) {
   const text = getMessageText(message);
+  const reasoning = getReasoningText(message);
+  const toolParts = getToolParts(message);
   const suspendedTool = suspendedToolFromMessage(message);
   const shouldRenderReview =
     suspendedTool?.toolName === "reviewProposalsClient" &&
@@ -414,6 +859,14 @@ function ConversationMessage({
     <AIChatMessage author={message.role === "user" ? "user" : "assistant"}>
       <div style={{ display: "grid", gap: 12 }}>
         {text ? <p style={{ margin: 0, whiteSpace: "pre-wrap" }}>{text}</p> : null}
+
+        {reasoning ? (
+          <AIChatReasoning title="Assistant thinking summary">
+            <p style={{ margin: 0, whiteSpace: "pre-wrap" }}>{reasoning}</p>
+          </AIChatReasoning>
+        ) : null}
+
+        {toolParts.length > 0 ? <ToolActivityCard toolParts={toolParts} /> : null}
 
         {shouldRenderReview ? (
           <ReviewToolCard
@@ -451,6 +904,7 @@ export default function ChatWorkspace({
       allowedContentTypes: parameters.allowedContentTypes,
       maxDiscoveryQueries: parameters.maxDiscoveryQueries,
       maxCandidatesPerRun: parameters.maxCandidatesPerRun,
+      toolAvailability: parameters.toolAvailability,
     },
     memory: chatMemory,
   });
@@ -462,6 +916,7 @@ export default function ChatWorkspace({
       allowedContentTypes: parameters.allowedContentTypes,
       maxDiscoveryQueries: parameters.maxDiscoveryQueries,
       maxCandidatesPerRun: parameters.maxCandidatesPerRun,
+      toolAvailability: parameters.toolAvailability,
     },
     memory: chatMemory,
   };
@@ -494,6 +949,8 @@ export default function ChatWorkspace({
       transport,
       dataPartSchemas: renameChatDataPartSchemas as any,
     });
+  const latestAgentTrace = getLatestAgentTrace(messages);
+  const transportError = normalizeDebugError(error);
 
   useEffect(() => {
     setChatMemory(loadChatMemory(storageKey));
@@ -503,69 +960,95 @@ export default function ChatWorkspace({
     toolInput: DiscoverCandidatesToolInput,
   ): Promise<DiscoverCandidatesToolOutput> {
     const renameInput = toolInput.input;
-
     const searchQueries = buildSearchQueries({
       discoveryQueries: toolInput.discoveryPlan.queries,
       oldProductName: renameInput.oldProductName,
       maxDiscoveryQueries: parameters.maxDiscoveryQueries,
     });
 
-    const { indexStatus, searchResult }: {
-      indexStatus: DiscoverCandidatesToolOutput["indexStatus"];
-      searchResult: SemanticSearchResult;
-    } = await performCandidateSearch(sdk, {
-      defaultLocale: renameInput.defaultLocale,
-      searchMode: renameInput.searchMode,
-      queries: searchQueries,
-      limitPerQuery: Math.min(toolInput.maxCandidatesPerRun, 10),
-    });
+    try {
+      const { indexStatus, searchResult }: {
+        indexStatus: DiscoverCandidatesToolOutput["indexStatus"];
+        searchResult: SemanticSearchResult;
+      } = await performCandidateSearch(sdk, {
+        defaultLocale: renameInput.defaultLocale,
+        searchMode: renameInput.searchMode,
+        queries: searchQueries,
+        limitPerQuery: Math.min(toolInput.maxCandidatesPerRun, 10),
+        semanticSearchEnabled: parameters.toolAvailability.semanticSearch,
+      });
 
-    const snapshots = await fetchEntrySnapshots(
-      sdk,
-      searchResult.entryIds.slice(0, toolInput.maxCandidatesPerRun),
-      renameInput.defaultLocale,
-      renameInput.contentTypeIds,
-    );
-    const variants = buildNameVariants(renameInput.oldProductName);
-    const lexicalMatches = snapshots.filter((candidate) =>
-      candidateContainsVariant(candidate, variants),
-    );
-    const candidateSnapshots =
-      lexicalMatches.length > 0
-        ? lexicalMatches
-        : snapshots.slice(0, toolInput.maxCandidatesPerRun);
+      const snapshots = await fetchEntrySnapshots(
+        sdk,
+        searchResult.entryIds.slice(0, toolInput.maxCandidatesPerRun),
+        renameInput.defaultLocale,
+        renameInput.contentTypeIds,
+      );
+      const variants = buildNameVariants(renameInput.oldProductName);
+      const lexicalMatches = snapshots.filter((candidate) =>
+        candidateContainsVariant(candidate, variants),
+      );
+      const candidateSnapshots =
+        lexicalMatches.length > 0
+          ? lexicalMatches
+          : snapshots.slice(0, toolInput.maxCandidatesPerRun);
 
-    return {
-      runId: toolInput.runId,
-      indexStatus,
-      searchResult,
-      candidateSnapshots,
-    };
+      return {
+        runId: toolInput.runId,
+        indexStatus,
+        searchResult,
+        candidateSnapshots,
+      };
+    } catch (error) {
+      throw createChatDebugError(error, {
+        code: "discover_candidates_failed",
+        phase: "searching-contentful",
+        toolName: "discoverCandidatesClient",
+        details: {
+          defaultLocale: renameInput.defaultLocale,
+          requestedSearchMode: renameInput.searchMode,
+          semanticSearchEnabled: parameters.toolAvailability.semanticSearch,
+          searchQueries,
+        },
+      });
+    }
   }
 
   async function applyApprovedChanges(
     toolInput: ApplyApprovedChangesToolInput,
   ): Promise<ApplyApprovedChangesToolOutput> {
-    const approvals = Object.fromEntries(
-      toolInput.approvals.map((approval) => [
-        approval.changeId,
-        {
-          approved: approval.approved,
-          editedText: approval.editedText,
-        },
-      ]),
-    );
-    const operations = buildApplyOperations(
-      toolInput.candidateSnapshots,
-      toolInput.proposedChanges,
-      approvals,
-    );
-    const results = await applyOperations(sdk, operations);
+    try {
+      const approvals = Object.fromEntries(
+        toolInput.approvals.map((approval) => [
+          approval.changeId,
+          {
+            approved: approval.approved,
+            editedText: approval.editedText,
+          },
+        ]),
+      );
+      const operations = buildApplyOperations(
+        toolInput.candidateSnapshots,
+        toolInput.proposedChanges,
+        approvals,
+      );
+      const results = await applyOperations(sdk, operations);
 
-    return {
-      runId: toolInput.runId,
-      results,
-    };
+      return {
+        runId: toolInput.runId,
+        results,
+      };
+    } catch (error) {
+      throw createChatDebugError(error, {
+        code: "apply_changes_failed",
+        phase: "applying-approved-changes",
+        toolName: "applyApprovedChangesClient",
+        details: {
+          runId: toolInput.runId,
+          approvalCount: toolInput.approvals.length,
+        },
+      });
+    }
   }
 
   async function resumeSuspendedTool(
@@ -686,8 +1169,14 @@ export default function ChatWorkspace({
         setClientActionError({
           toolCallId: activeSuspension.toolCallId,
           toolName: activeSuspension.toolName,
-          message:
-            toolError instanceof Error ? toolError.message : String(toolError),
+          error: normalizeDebugError(toolError, {
+            phase: phaseForToolName(activeSuspension.toolName),
+            toolName: activeSuspension.toolName,
+            details: [
+              `toolCallId: ${activeSuspension.toolCallId}`,
+              `runId: ${activeSuspension.runId}`,
+            ],
+          })!,
         });
       }
     };
@@ -764,6 +1253,10 @@ export default function ChatWorkspace({
       <AIChatHistory>
         <p style={{ margin: 0 }}>Locale: {defaultLocale}</p>
         <p style={{ margin: 0 }}>Surface: {surfaceContext.surface}</p>
+        <p style={{ margin: 0 }}>
+          Semantic search:{" "}
+          {parameters.toolAvailability.semanticSearch ? "enabled" : "disabled"}
+        </p>
         <p style={{ margin: 0, wordBreak: "break-all" }}>
           Backend: {parameters.mastraBaseUrl}
         </p>
@@ -786,15 +1279,12 @@ export default function ChatWorkspace({
           </p>
         </AIChatArtifactMessage>
       ) : null}
+      <AgentTracePanel trace={latestAgentTrace} />
       {clientActionError ? (
-        <AIChatArtifactMessage title="Latest issue">
-          <p style={{ margin: 0 }}>{clientActionError.message}</p>
-        </AIChatArtifactMessage>
+        <DebugErrorCard title="Latest issue" error={clientActionError.error} />
       ) : null}
-      {!clientActionError && error ? (
-        <AIChatArtifactMessage title="Latest issue">
-          <p style={{ margin: 0 }}>{error.message}</p>
-        </AIChatArtifactMessage>
+      {!clientActionError && transportError ? (
+        <DebugErrorCard title="Latest issue" error={transportError} />
       ) : null}
     </AIChatSidePanel>
   );
@@ -888,8 +1378,8 @@ export default function ChatWorkspace({
                 Stop
               </button>
             ) : null}
-            {error ? (
-              <span style={{ color: "#b91c1c" }}>{error.message}</span>
+            {transportError ? (
+              <span style={{ color: "#b91c1c" }}>{transportError.message}</span>
             ) : null}
           </div>
         </AIChatInput>

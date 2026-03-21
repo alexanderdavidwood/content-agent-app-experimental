@@ -12,6 +12,9 @@ function createContext() {
       allowedContentTypes: [],
       maxDiscoveryQueries: 5,
       maxCandidatesPerRun: 30,
+      toolAvailability: {
+        semanticSearch: true,
+      },
     },
     memory: {
       thread: "thread-1",

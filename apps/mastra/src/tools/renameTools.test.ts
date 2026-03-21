@@ -23,6 +23,9 @@ const chatContext: ChatExecutionContext = {
   allowedContentTypes: ["page"],
   maxDiscoveryQueries: 5,
   maxCandidatesPerRun: 30,
+  toolAvailability: {
+    semanticSearch: true,
+  },
 };
 
 function createRequestContext() {
@@ -32,6 +35,7 @@ function createRequestContext() {
   requestContext.set("allowedContentTypes", chatContext.allowedContentTypes);
   requestContext.set("maxDiscoveryQueries", chatContext.maxDiscoveryQueries);
   requestContext.set("maxCandidatesPerRun", chatContext.maxCandidatesPerRun);
+  requestContext.set("toolAvailability", chatContext.toolAvailability);
   return requestContext;
 }
 
@@ -61,6 +65,37 @@ test("discoverCandidatesClientTool suspends with a client search payload", async
   assert.equal(parsed.input.newProductName, "Acme Core");
   assert.equal(parsed.input.defaultLocale, "en-US");
   assert.equal(parsed.input.surfaceContext?.surface, "page");
+  assert.equal(parsed.input.searchMode, "semantic");
+});
+
+test("discoverCandidatesClientTool forces keyword mode when semantic search is disabled", async () => {
+  delete process.env.OPENAI_API_KEY;
+  let suspendedPayload: unknown;
+  const disabledContext = createRequestContext();
+  disabledContext.set("toolAvailability", {
+    semanticSearch: false,
+  });
+
+  await discoverCandidatesClientTool.execute!(
+    {
+      oldProductName: "Acme Lite",
+      newProductName: "Acme Core",
+      searchMode: "hybrid",
+    },
+    {
+      requestContext: disabledContext,
+      agent: {
+        toolCallId: "tool-discover",
+        messages: [],
+        suspend: async (payload: unknown) => {
+          suspendedPayload = payload;
+        },
+      },
+    } as any,
+  );
+
+  const parsed = discoverCandidatesToolInputSchema.parse(suspendedPayload);
+  assert.equal(parsed.input.searchMode, "keyword");
 });
 
 test("draftProposalsTool creates proposed changes from candidate snapshots", async () => {

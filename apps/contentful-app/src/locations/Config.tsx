@@ -10,6 +10,9 @@ const DEFAULT_PARAMETERS: AppInstallationParameters = {
   maxDiscoveryQueries: 5,
   maxCandidatesPerRun: 30,
   defaultDryRun: true,
+  toolAvailability: {
+    semanticSearch: true,
+  },
 };
 
 function resolveInitialParameters(rawInstallationParameters: unknown): AppInstallationParameters {
@@ -51,7 +54,8 @@ export default function Config() {
       <h1>Product Rename Agent configuration</h1>
       <p>
         Set the Mastra backend URL and constrain which content types the rename
-        workflow is allowed to scan.
+        workflow is allowed to scan. You can also disable semantic search if
+        the app should stay in keyword-only mode.
       </p>
 
       <form style={{ display: "grid", gap: 16 }}>
@@ -129,6 +133,30 @@ export default function Config() {
           />
           <span>Default to dry-run mode</span>
         </label>
+
+        <fieldset style={{ display: "grid", gap: 12 }}>
+          <legend>Tool availability</legend>
+          <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <input
+              type="checkbox"
+              checked={parameters.toolAvailability.semanticSearch}
+              onChange={(event) =>
+                setParameters((current) => ({
+                  ...current,
+                  toolAvailability: {
+                    ...current.toolAvailability,
+                    semanticSearch: event.target.checked,
+                  },
+                }))
+              }
+            />
+            <span>Enable semantic search</span>
+          </label>
+          <p style={{ margin: 0, color: "#57534e" }}>
+            When disabled, the agent is limited to keyword search even if a
+            request asks for semantic or hybrid search.
+          </p>
+        </fieldset>
       </form>
     </main>
   );

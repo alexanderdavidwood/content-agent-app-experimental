@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { createTool } from "@mastra/core/tools";
-import type { RenameRunInput } from "@contentful-rename/shared";
+import {
+  createChatDebugError,
+  serializeChatDebugError,
+  type ChatExecutionContext,
+  type RenameRunInput,
+} from "@contentful-rename/shared";
 import {
   applyApprovedChangesToolInputSchema,
   applyApprovedChangesToolOutputSchema,
@@ -26,6 +31,17 @@ function getChatContext(context: any) {
   return chatExecutionContextSchema.parse(context?.requestContext?.all ?? {});
 }
 
+function resolveSearchMode(
+  requestedSearchMode: RenameRunInput["searchMode"] | undefined,
+  chatContext: ChatExecutionContext,
+): RenameRunInput["searchMode"] {
+  if (!chatContext.toolAvailability.semanticSearch) {
+    return "keyword";
+  }
+
+  return requestedSearchMode ?? "semantic";
+}
+
 export const discoverCandidatesClientTool = createTool({
   id: "discover-candidates-client",
   description:
@@ -37,7 +53,15 @@ export const discoverCandidatesClientTool = createTool({
   requestContextSchema: chatExecutionContextSchema,
   execute: async (inputData, context) => {
     if (!context.agent) {
-      throw new Error("Agent context is required for Contentful search.");
+      throw new Error(
+        serializeChatDebugError(
+          createChatDebugError(new Error("Agent context is required for Contentful search."), {
+            code: "agent_context_missing",
+            phase: "searching-contentful",
+            toolName: "discoverCandidatesClient",
+          }),
+        ),
+      );
     }
 
     if (!context.agent.resumeData) {
@@ -46,7 +70,7 @@ export const discoverCandidatesClientTool = createTool({
         oldProductName: inputData.oldProductName,
         newProductName: inputData.newProductName,
         defaultLocale: chatContext.defaultLocale,
-        searchMode: inputData.searchMode ?? "semantic",
+        searchMode: resolveSearchMode(inputData.searchMode, chatContext),
         contentTypeIds: chatContext.allowedContentTypes,
         userNotes: inputData.userNotes,
         surfaceContext: chatContext.surfaceContext,
@@ -99,7 +123,15 @@ export const reviewProposalsClientTool = createTool({
   requestContextSchema: chatExecutionContextSchema,
   execute: async (inputData, context) => {
     if (!context.agent) {
-      throw new Error("Agent context is required for review.");
+      throw new Error(
+        serializeChatDebugError(
+          createChatDebugError(new Error("Agent context is required for review."), {
+            code: "agent_context_missing",
+            phase: "reviewing-proposed-changes",
+            toolName: "reviewProposalsClient",
+          }),
+        ),
+      );
     }
 
     if (!context.agent.resumeData) {
@@ -122,7 +154,15 @@ export const applyApprovedChangesClientTool = createTool({
   requestContextSchema: chatExecutionContextSchema,
   execute: async (inputData, context) => {
     if (!context.agent) {
-      throw new Error("Agent context is required for applying changes.");
+      throw new Error(
+        serializeChatDebugError(
+          createChatDebugError(new Error("Agent context is required for applying changes."), {
+            code: "agent_context_missing",
+            phase: "applying-approved-changes",
+            toolName: "applyApprovedChangesClient",
+          }),
+        ),
+      );
     }
 
     if (!context.agent.resumeData) {

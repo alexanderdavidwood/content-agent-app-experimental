@@ -89,6 +89,9 @@ const DEFAULT_INSTALLATION_PARAMETERS = {
   maxDiscoveryQueries: 5,
   maxCandidatesPerRun: 30,
   defaultDryRun: true,
+  toolAvailability: {
+    semanticSearch: true,
+  },
 } as const;
 
 const TUNNEL_REMINDER_BYPASS_HEADER = "bypass-tunnel-reminder";
@@ -396,14 +399,44 @@ export async function performCandidateSearch(
     searchMode: "semantic" | "keyword" | "hybrid";
     queries: string[];
     limitPerQuery: number;
+    semanticSearchEnabled?: boolean;
   },
   cmaOverride?: KeywordSearchClientOverride,
 ): Promise<{
   indexStatus: SemanticEnsureIndexResult | null;
   searchResult: SemanticSearchResult;
 }> {
-  const { defaultLocale, searchMode, queries, limitPerQuery } = input;
+  const {
+    defaultLocale,
+    searchMode,
+    queries,
+    limitPerQuery,
+    semanticSearchEnabled = true,
+  } = input;
   let indexStatus: SemanticEnsureIndexResult | null = null;
+
+  if (!semanticSearchEnabled) {
+    const searchResult = await fallbackKeywordSearch(
+      sdk,
+      queries,
+      limitPerQuery,
+      cmaOverride,
+    );
+
+    return {
+      indexStatus: null,
+      searchResult: {
+        ...searchResult,
+        warnings:
+          searchMode === "keyword"
+            ? searchResult.warnings
+            : [
+                `Semantic search is disabled in app configuration; using keyword search instead of ${searchMode}.`,
+                ...searchResult.warnings,
+              ],
+      },
+    };
+  }
 
   if (searchMode !== "keyword" && hasAppActionApi(sdk)) {
     try {
@@ -421,14 +454,34 @@ export async function performCandidateSearch(
   }
 
   if (!hasAppActionApi(sdk)) {
+    if (searchMode !== "keyword") {
+      indexStatus = {
+        status: "UNSUPPORTED",
+        locale: defaultLocale,
+        warning:
+          "Semantic App Action API is unavailable in this Contentful SDK context; using keyword search.",
+      };
+    }
+
+    const searchResult = await fallbackKeywordSearch(
+      sdk,
+      queries,
+      limitPerQuery,
+      cmaOverride,
+    );
+
     return {
       indexStatus,
-      searchResult: await fallbackKeywordSearch(
-        sdk,
-        queries,
-        limitPerQuery,
-        cmaOverride,
-      ),
+      searchResult:
+        searchMode === "keyword"
+          ? searchResult
+          : {
+              ...searchResult,
+              warnings: [
+                "Semantic App Action API is unavailable in this Contentful SDK context; using keyword search.",
+                ...searchResult.warnings,
+              ],
+            },
     };
   }
 

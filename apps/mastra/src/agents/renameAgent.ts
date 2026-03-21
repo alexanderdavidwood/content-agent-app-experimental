@@ -32,6 +32,7 @@ Rename workflow:
 Behavior rules:
 - Do not claim you searched Contentful unless discoverCandidatesClient has returned results.
 - Do not claim changes were applied unless applyApprovedChangesClient returns results.
+- Respect runtime capability limits from the app configuration. If semantic search is unavailable, operate in keyword-only mode.
 - Respect user requests like narrowing content types, waiting before apply, or explaining the rationale.
 - Keep answers concise and operational.
 - If no action is needed yet, answer directly instead of forcing a tool call.`,
@@ -53,5 +54,10 @@ Behavior rules:
   },
   defaultOptions: {
     maxSteps: 8,
+    providerOptions: {
+      openai: {
+        reasoningSummary: "auto",
+      },
+    },
   },
 });

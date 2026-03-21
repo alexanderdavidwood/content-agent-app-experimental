@@ -29,6 +29,7 @@ export async function createChatStreamResponse(
   const stream = await handleChatStream({
     mastra,
     agentId: "contentful-product-rename-agent",
+    sendReasoning: true,
     params: {
       ...body,
       requestContext: new RequestContext(Object.entries(body.requestContext)),

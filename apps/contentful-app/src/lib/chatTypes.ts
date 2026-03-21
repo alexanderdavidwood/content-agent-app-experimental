@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { UIMessage } from "ai";
 import type {
+  AgentTraceData,
   ApplyApprovedChangesToolInput,
   ApplyApprovedChangesToolOutput,
   ChatExecutionContext,
@@ -11,7 +12,10 @@ import type {
   ReviewProposalsToolInput,
   ReviewProposalsToolOutput,
 } from "@contentful-rename/shared";
-import { chatExecutionContextSchema } from "@contentful-rename/shared";
+import {
+  agentTraceDataSchema,
+  chatExecutionContextSchema,
+} from "@contentful-rename/shared";
 
 export const chatMemorySchema = z.object({
   thread: z.string().min(1),
@@ -36,10 +40,15 @@ export const toolCallApprovalDataSchema = z.object({
   resumeSchema: z.unknown().optional(),
 });
 
+export const TOOL_CALL_SUSPENDED_PART_TYPE = "data-tool-call-suspended";
+export const TOOL_CALL_APPROVAL_PART_TYPE = "data-tool-call-approval";
+export const LEGACY_TOOL_CALL_SUSPENDED_PART_TYPE = "data-toolCallSuspended";
+export const LEGACY_TOOL_CALL_APPROVAL_PART_TYPE = "data-toolCallApproval";
+
 export type RenameChatDataParts = {
-  toolCallSuspended: z.infer<typeof toolCallSuspendedDataSchema>;
-  toolCallApproval: z.infer<typeof toolCallApprovalDataSchema>;
-  toolAgent: unknown;
+  "tool-call-suspended": z.infer<typeof toolCallSuspendedDataSchema>;
+  "tool-call-approval": z.infer<typeof toolCallApprovalDataSchema>;
+  "tool-agent": AgentTraceData;
 };
 
 export type RenameChatTools = {
@@ -78,7 +87,7 @@ export type RenameChatRequestBody = {
 };
 
 export const renameChatDataPartSchemas = {
-  "data-tool-call-suspended": toolCallSuspendedDataSchema,
-  "data-tool-call-approval": toolCallApprovalDataSchema,
-  "data-tool-agent": z.unknown(),
+  [TOOL_CALL_SUSPENDED_PART_TYPE]: toolCallSuspendedDataSchema,
+  [TOOL_CALL_APPROVAL_PART_TYPE]: toolCallApprovalDataSchema,
+  "data-tool-agent": agentTraceDataSchema,
 } as const;
