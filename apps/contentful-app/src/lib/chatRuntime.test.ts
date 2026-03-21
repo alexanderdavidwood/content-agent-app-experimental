@@ -2,14 +2,20 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  getLatestAgentTrace,
   approveSafeChanges,
   buildReviewDraft,
   buildReviewOutput,
   buildWelcomeMessage,
   countApproved,
   getLatestSuspendedToolCall,
+  getToolError,
 } from "./chatRuntime";
 import type { RenameChatMessage } from "./chatTypes";
+import {
+  LEGACY_TOOL_CALL_SUSPENDED_PART_TYPE,
+  TOOL_CALL_SUSPENDED_PART_TYPE,
+} from "./chatTypes";
 
 const reviewInput = {
   runId: "run-1",
@@ -60,7 +66,7 @@ test("getLatestSuspendedToolCall returns the current review suspension", () => {
     role: "assistant",
     parts: [
       {
-        type: "data-toolCallSuspended",
+        type: TOOL_CALL_SUSPENDED_PART_TYPE,
         data: {
           state: "data-tool-call-suspended",
           runId: "run-1",
@@ -77,6 +83,30 @@ test("getLatestSuspendedToolCall returns the current review suspension", () => {
   assert.equal(pending?.toolCallId, "tool-review");
   assert.equal(pending?.toolName, "reviewProposalsClient");
   assert.equal(pending?.input.runId, "run-1");
+});
+
+test("getLatestSuspendedToolCall supports legacy camelCase suspension parts", () => {
+  const message: RenameChatMessage = {
+    id: "assistant-review-legacy",
+    role: "assistant",
+    parts: [
+      {
+        type: LEGACY_TOOL_CALL_SUSPENDED_PART_TYPE,
+        data: {
+          state: "data-tool-call-suspended",
+          runId: "run-2",
+          toolCallId: "tool-review-legacy",
+          toolName: "reviewProposalsClient",
+          suspendPayload: reviewInput,
+        },
+      } as any,
+    ],
+  };
+
+  const pending = getLatestSuspendedToolCall([message]);
+
+  assert.equal(pending?.toolCallId, "tool-review-legacy");
+  assert.equal(pending?.toolName, "reviewProposalsClient");
 });
 
 test("review draft helpers preserve edited text and only bulk-approve safe changes", () => {
@@ -106,4 +136,56 @@ test("review draft helpers preserve edited text and only bulk-approve safe chang
       reviewerNote: undefined,
     },
   ]);
+});
+
+test("getToolError parses structured debug errors from tool parts", () => {
+  const message: RenameChatMessage = {
+    id: "assistant-tool-error",
+    role: "assistant",
+    parts: [
+      {
+        type: "tool-discoverCandidatesClient",
+        toolCallId: "tool-1",
+        state: "output-error",
+        errorText: JSON.stringify({
+          message: "Search failed",
+          code: "discover_candidates_failed",
+          phase: "searching-contentful",
+          details: ["query: porter"],
+        }),
+      } as any,
+    ],
+  };
+
+  const error = getToolError(message);
+
+  assert.equal(error?.message, "Search failed");
+  assert.equal(error?.code, "discover_candidates_failed");
+  assert.equal(error?.phase, "searching-contentful");
+});
+
+test("getLatestAgentTrace returns the latest streamed agent trace data", () => {
+  const message: RenameChatMessage = {
+    id: "assistant-trace",
+    role: "assistant",
+    parts: [
+      {
+        type: "data-tool-agent",
+        data: {
+          status: "running",
+          text: "Working",
+          reasoning: ["Thinking..."],
+          warnings: [],
+          toolCalls: [],
+          toolResults: [],
+          steps: [],
+        },
+      } as any,
+    ],
+  };
+
+  const trace = getLatestAgentTrace([message]);
+
+  assert.equal(trace?.status, "running");
+  assert.equal(trace?.reasoning[0], "Thinking...");
 });

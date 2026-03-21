@@ -1,4 +1,7 @@
 import {
+  createChatDebugError,
+  parseChatDebugError,
+  type AgentTraceData,
   type ApprovedChange,
   type ApplyApprovedChangesToolInput,
   type DiscoverCandidatesToolInput,
@@ -16,6 +19,10 @@ import {
 
 import type { RenameChatMessage } from "./chatTypes";
 import {
+  LEGACY_TOOL_CALL_APPROVAL_PART_TYPE,
+  LEGACY_TOOL_CALL_SUSPENDED_PART_TYPE,
+  TOOL_CALL_APPROVAL_PART_TYPE,
+  TOOL_CALL_SUSPENDED_PART_TYPE,
   toolCallApprovalDataSchema,
   toolCallSuspendedDataSchema,
 } from "./chatTypes";
@@ -58,6 +65,15 @@ type LatestToolPart = {
   errorText?: string;
 };
 
+export type ToolPartSummary = {
+  type: string;
+  toolCallId: string;
+  state: string;
+  input?: unknown;
+  output?: unknown;
+  errorText?: string;
+};
+
 export function buildWelcomeMessage(): RenameChatMessage {
   return {
     id: "assistant-welcome",
@@ -79,6 +95,36 @@ export function getMessageText(message: RenameChatMessage) {
     .trim();
 }
 
+export function getReasoningText(message: RenameChatMessage) {
+  return message.parts
+    .map((part) => (part.type === "reasoning" ? part.text : ""))
+    .join("")
+    .trim();
+}
+
+export function getToolParts(message: RenameChatMessage): ToolPartSummary[] {
+  if (message.role !== "assistant") {
+    return [];
+  }
+
+  return message.parts.flatMap((part) => {
+    if (typeof part.type !== "string" || !part.type.startsWith("tool-")) {
+      return [];
+    }
+
+    return [
+      {
+        type: part.type,
+        toolCallId: (part as any).toolCallId,
+        state: (part as any).state,
+        input: (part as any).input,
+        output: (part as any).output,
+        errorText: (part as any).errorText,
+      },
+    ];
+  });
+}
+
 export function getLatestToolPart(
   message: RenameChatMessage | undefined,
 ): LatestToolPart | null {
@@ -86,23 +132,7 @@ export function getLatestToolPart(
     return null;
   }
 
-  for (let index = message.parts.length - 1; index >= 0; index -= 1) {
-    const part = message.parts[index];
-    if (typeof part.type !== "string" || !part.type.startsWith("tool-")) {
-      continue;
-    }
-
-    return {
-      type: part.type,
-      toolCallId: (part as any).toolCallId,
-      state: (part as any).state,
-      input: (part as any).input,
-      output: (part as any).output,
-      errorText: (part as any).errorText,
-    };
-  }
-
-  return null;
+  return getToolParts(message).at(-1) ?? null;
 }
 
 function suspendedToolPartFromMessage(message: RenameChatMessage | undefined) {
@@ -112,10 +142,17 @@ function suspendedToolPartFromMessage(message: RenameChatMessage | undefined) {
 
   for (let index = message.parts.length - 1; index >= 0; index -= 1) {
     const part = message.parts[index];
-    if (part.type === "data-toolCallSuspended") {
+    const partType = String(part.type);
+    if (
+      partType === TOOL_CALL_SUSPENDED_PART_TYPE ||
+      partType === LEGACY_TOOL_CALL_SUSPENDED_PART_TYPE
+    ) {
       return toolCallSuspendedDataSchema.parse((part as any).data);
     }
-    if (part.type === "data-toolCallApproval") {
+    if (
+      partType === TOOL_CALL_APPROVAL_PART_TYPE ||
+      partType === LEGACY_TOOL_CALL_APPROVAL_PART_TYPE
+    ) {
       return toolCallApprovalDataSchema.parse((part as any).data);
     }
   }
@@ -240,10 +277,31 @@ export function getToolError(message: RenameChatMessage) {
     return null;
   }
 
-  return {
+  const parsed = parseChatDebugError(toolPart.errorText);
+
+  return parsed ?? createChatDebugError(toolPart.errorText ?? "This step failed.", {
     toolName: toolPart.type.slice(5),
-    message: toolPart.errorText ?? "This step failed.",
-  };
+  });
+}
+
+export function getLatestAgentTrace(
+  messages: RenameChatMessage[],
+): AgentTraceData | null {
+  for (let messageIndex = messages.length - 1; messageIndex >= 0; messageIndex -= 1) {
+    const message = messages[messageIndex];
+    if (message.role !== "assistant") {
+      continue;
+    }
+
+    for (let partIndex = message.parts.length - 1; partIndex >= 0; partIndex -= 1) {
+      const part = message.parts[partIndex];
+      if (part.type === "data-tool-agent") {
+        return (part as any).data as AgentTraceData;
+      }
+    }
+  }
+
+  return null;
 }
 
 export function parseDiscoverCandidatesOutput(

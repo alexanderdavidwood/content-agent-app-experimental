@@ -183,6 +183,13 @@ The app configuration screen stores these installation parameters:
 | `maxDiscoveryQueries` | `5` | Discovery query cap, validated to `1-5` |
 | `maxCandidatesPerRun` | `30` | Candidate cap, validated to `1-100` |
 | `defaultDryRun` | `true` | Stored in config UI; not currently enforced by the runtime flow |
+| `toolAvailability.semanticSearch` | `true` | Enables semantic/hybrid search. When disabled, the app forces keyword-only candidate discovery |
+
+The chat UI also exposes richer debugging information during runs:
+
+- structured error details with optional stack traces
+- inline tool activity cards for tool inputs, outputs, and failures
+- reasoning summaries and a right-rail execution trace when the model provides them
 
 ## Local development
 

@@ -125,3 +125,51 @@ test("performCandidateSearch falls back to keyword search when semantic app acti
     /fell back to keyword search/i,
   );
 });
+
+test("performCandidateSearch enforces keyword mode when semantic search is disabled", async () => {
+  const calls: string[] = [];
+  const result = await performCandidateSearch(
+    {
+      cmaAdapter: {},
+      ids: { space: "space-id" },
+      parameters: {},
+      appAction: {
+        async callAppAction(actionName: string) {
+          calls.push(actionName);
+          return {
+            entryIds: [],
+            queryHits: [],
+            warnings: [],
+          };
+        },
+      },
+    } as any,
+    {
+      defaultLocale: "en-US",
+      searchMode: "hybrid",
+      queries: ["porter"],
+      limitPerQuery: 2,
+      semanticSearchEnabled: false,
+    },
+    {
+      entry: {
+        async getMany({ query, limit }) {
+          return {
+            items: Array.from({ length: limit }, (_, index) => ({
+              sys: {
+                id: `${query}-${index + 1}`,
+              },
+            })),
+          };
+        },
+      },
+    },
+  );
+
+  assert.deepEqual(calls, []);
+  assert.deepEqual(result.searchResult.entryIds, ["porter-1", "porter-2"]);
+  assert.match(
+    result.searchResult.warnings[0] ?? "",
+    /Semantic search is disabled/i,
+  );
+});

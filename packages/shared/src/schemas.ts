@@ -111,6 +111,13 @@ export const appInstallationParametersSchema = z.object({
   maxDiscoveryQueries: z.number().int().positive().max(5).default(5),
   maxCandidatesPerRun: z.number().int().positive().max(100).default(30),
   defaultDryRun: z.boolean().default(true),
+  toolAvailability: z
+    .object({
+      semanticSearch: z.boolean().default(true),
+    })
+    .default({
+      semanticSearch: true,
+    }),
 });
 
 export const chatExecutionContextSchema = z.object({
@@ -119,6 +126,13 @@ export const chatExecutionContextSchema = z.object({
   allowedContentTypes: z.array(z.string()).default([]),
   maxDiscoveryQueries: z.number().int().positive().max(5).default(5),
   maxCandidatesPerRun: z.number().int().positive().max(100).default(30),
+  toolAvailability: z
+    .object({
+      semanticSearch: z.boolean().default(true),
+    })
+    .default({
+      semanticSearch: true,
+    }),
 });
 
 export const semanticEnsureIndexInputSchema = z.object({
@@ -177,6 +191,99 @@ export const chatRunErrorSchema = z.object({
   message: z.string().min(1),
   retryable: z.boolean().default(false),
 });
+
+export const chatDebugErrorSchema = z.object({
+  message: z.string().min(1),
+  name: z.string().optional(),
+  code: z.string().optional(),
+  phase: renameRunPhaseSchema.optional(),
+  toolName: z.string().optional(),
+  retryable: z.boolean().default(false),
+  details: z.array(z.string()).default([]),
+  stack: z.string().optional(),
+});
+
+const agentTraceUsageSchema = z
+  .object({
+    inputTokens: z.number().nullable().optional(),
+    outputTokens: z.number().nullable().optional(),
+    totalTokens: z.number().nullable().optional(),
+    reasoningTokens: z.number().nullable().optional(),
+    cachedInputTokens: z.number().nullable().optional(),
+  })
+  .passthrough();
+
+export const agentTraceToolCallSchema = z
+  .object({
+    type: z.string().optional(),
+    toolCallId: z.string().optional(),
+    toolName: z.string().optional(),
+    args: z.unknown().optional(),
+    dynamic: z.boolean().optional(),
+    providerExecuted: z.boolean().optional(),
+    payload: z.unknown().optional(),
+  })
+  .passthrough();
+
+export const agentTraceToolResultSchema = z
+  .object({
+    type: z.string().optional(),
+    toolCallId: z.string().optional(),
+    toolName: z.string().optional(),
+    result: z.unknown().optional(),
+    output: z.unknown().optional(),
+    isError: z.boolean().optional(),
+    dynamic: z.boolean().optional(),
+    errorText: z.string().optional(),
+    payload: z.unknown().optional(),
+  })
+  .passthrough();
+
+export const agentTraceStepSchema = z
+  .object({
+    stepType: z.string().optional(),
+    text: z.string().optional(),
+    reasoningText: z.string().optional(),
+    finishReason: z.string().nullable().optional(),
+    warnings: z.array(z.unknown()).default([]),
+    staticToolCalls: z.array(agentTraceToolCallSchema).default([]),
+    dynamicToolCalls: z.array(agentTraceToolCallSchema).default([]),
+    staticToolResults: z.array(agentTraceToolResultSchema).default([]),
+    dynamicToolResults: z.array(agentTraceToolResultSchema).default([]),
+    usage: agentTraceUsageSchema.nullable().optional(),
+    response: z
+      .object({
+        id: z.string().optional(),
+        modelId: z.string().optional(),
+        timestamp: z.union([z.string(), z.date()]).optional(),
+      })
+      .passthrough()
+      .optional(),
+  })
+  .passthrough();
+
+export const agentTraceDataSchema = z
+  .object({
+    id: z.string().optional(),
+    status: z.enum(["running", "finished"]).optional(),
+    text: z.string().default(""),
+    reasoning: z.array(z.string()).default([]),
+    warnings: z.array(z.unknown()).default([]),
+    toolCalls: z.array(agentTraceToolCallSchema).default([]),
+    toolResults: z.array(agentTraceToolResultSchema).default([]),
+    steps: z.array(agentTraceStepSchema).default([]),
+    finishReason: z.string().nullable().optional(),
+    usage: agentTraceUsageSchema.nullable().optional(),
+    response: z
+      .object({
+        id: z.string().optional(),
+        modelId: z.string().optional(),
+        timestamp: z.union([z.string(), z.date()]).optional(),
+      })
+      .passthrough()
+      .optional(),
+  })
+  .passthrough();
 
 export const discoverCandidatesToolInputSchema = z.object({
   runId: z.string(),
@@ -271,6 +378,9 @@ export type AppInstallationParameters = z.infer<
   typeof appInstallationParametersSchema
 >;
 export type ChatExecutionContext = z.infer<typeof chatExecutionContextSchema>;
+export type ToolAvailability = z.infer<
+  typeof appInstallationParametersSchema.shape.toolAvailability
+>;
 export type SemanticEnsureIndexInput = z.infer<
   typeof semanticEnsureIndexInputSchema
 >;
@@ -282,6 +392,7 @@ export type SemanticSearchResult = z.infer<typeof semanticSearchResultSchema>;
 export type RenameRunSummary = z.infer<typeof renameRunSummarySchema>;
 export type ChatMessageMetadata = z.infer<typeof chatMessageMetadataSchema>;
 export type ChatRunError = z.infer<typeof chatRunErrorSchema>;
+export type ChatDebugError = z.infer<typeof chatDebugErrorSchema>;
 export type DiscoverCandidatesToolInput = z.infer<
   typeof discoverCandidatesToolInputSchema
 >;
@@ -306,5 +417,9 @@ export type ApplyApprovedChangesToolInput = z.infer<
 export type ApplyApprovedChangesToolOutput = z.infer<
   typeof applyApprovedChangesToolOutputSchema
 >;
+export type AgentTraceToolCall = z.infer<typeof agentTraceToolCallSchema>;
+export type AgentTraceToolResult = z.infer<typeof agentTraceToolResultSchema>;
+export type AgentTraceStep = z.infer<typeof agentTraceStepSchema>;
+export type AgentTraceData = z.infer<typeof agentTraceDataSchema>;
 export type ChatArtifact = z.infer<typeof chatArtifactSchema>;
 export type ChatEnvelope = z.infer<typeof chatEnvelopeSchema>;

@@ -41,6 +41,21 @@ class AppErrorBoundary extends Component<
           <p style={{ marginBottom: 8 }}>
             {this.state.error.message || "Unknown rendering error."}
           </p>
+          {this.state.error.stack ? (
+            <details style={{ marginBottom: 8 }}>
+              <summary>Stack trace</summary>
+              <pre
+                style={{
+                  margin: "8px 0 0",
+                  whiteSpace: "pre-wrap",
+                  wordBreak: "break-word",
+                  fontSize: 12,
+                }}
+              >
+                {this.state.error.stack}
+              </pre>
+            </details>
+          ) : null}
           <p style={{ margin: 0 }}>
             Please refresh this page. If this persists, re-open the app location
             from Contentful and ensure installation parameters are saved.

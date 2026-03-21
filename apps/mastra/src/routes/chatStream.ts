@@ -1,4 +1,8 @@
 import { Hono } from "hono";
+import {
+  createChatDebugError,
+  serializeChatDebugError,
+} from "@contentful-rename/shared";
 
 import { mastra } from "../lib/mastra";
 import { createChatStreamResponse } from "./chatStreamResponse";
@@ -12,9 +16,15 @@ export const chatStreamRoute = new Hono().post("/", async (c) => {
     );
   } catch (error) {
     return c.text(
-      error instanceof Error
-        ? error.message
-        : "The rename assistant failed to stream a response.",
+      serializeChatDebugError(
+        createChatDebugError(error, {
+          code: "chat_stream_failed",
+          phase: "error",
+          details: {
+            route: "/chat/stream",
+          },
+        }),
+      ),
       500,
     );
   }
