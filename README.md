@@ -399,6 +399,24 @@ npm run test
 
 ## Build and deploy
 
+### Deployment notes
+
+Treat this section as the source of truth for how releases are expected to work. If the deployment setup changes, update this section in the same change.
+
+The deployment flow is split across two systems:
+
+- Backend (`apps/mastra`)
+  Expected to auto-deploy from git through Mastra Cloud after changes are pushed to the tracked branch/repo.
+- Frontend + App Actions (`apps/contentful-app`)
+  Deployed separately by uploading the built Contentful app bundle with `contentful-app-scripts`.
+
+That means a full release that touches both sides usually has two steps:
+
+1. Push the git commit so Mastra Cloud can deploy the backend update.
+2. Upload and activate the new Contentful app bundle so the iframe UI and App Actions match the backend.
+
+Before testing a change that touches backend behavior, confirm the Mastra Cloud deployment has completed and that the configured `mastraBaseUrl` points at that updated deployment.
+
 ### Storage modes
 
 The backend supports two deployment storage modes:
@@ -430,7 +448,9 @@ Implementation details worth knowing:
 
 ### Backend deployment
 
-Deploy the server from `apps/mastra` with the required environment variables and expose `/health` plus `/chat/stream`.
+The expected production path is Mastra Cloud auto-deploy from git. Push the relevant commit/branch, wait for the cloud deployment to finish, and ensure it exposes `/health` plus `/chat/stream`.
+
+If you are doing a manual or local backend deployment instead, deploy the server from `apps/mastra` with the required environment variables and expose `/health` plus `/chat/stream`.
 
 The backend currently uses:
 
