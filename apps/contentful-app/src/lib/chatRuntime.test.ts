@@ -57,8 +57,8 @@ test("buildWelcomeMessage advertises rename and inspection workflows", () => {
   const message = buildWelcomeMessage();
 
   assert.equal(message.role, "assistant");
-  assert.match((message.parts[0] as any).text, /Rename "Acme Lite" to "Acme Core"/);
-  assert.match((message.parts[0] as any).text, /inspect content types/i);
+  assert.match((message.parts[0] as any).text, /What locales are available here\?/);
+  assert.match((message.parts[0] as any).text, /Inspect content types/i);
 });
 
 test("getLatestSuspendedToolCall returns the current review suspension", () => {
@@ -136,14 +136,35 @@ test("getLatestSuspendedToolCall parses content inspection tool payloads", () =>
 
   assert.equal(pending?.toolCallId, "tool-content-types");
   assert.equal(pending?.toolName, "listContentTypesClient");
-  assert.deepEqual(
-    pending?.input,
-    {
-      contentTypeIds: ["page"],
-      includeFields: true,
-      limit: 10,
-    },
-  );
+  assert.deepEqual(pending?.input, {
+    contentTypeIds: ["page"],
+    includeFields: true,
+    limit: 10,
+  });
+});
+
+test("getLatestSuspendedToolCall parses new registry-backed locale tools", () => {
+  const message: RenameChatMessage = {
+    id: "assistant-locales",
+    role: "assistant",
+    parts: [
+      {
+        type: TOOL_CALL_SUSPENDED_PART_TYPE,
+        data: {
+          state: "data-tool-call-suspended",
+          runId: "run-4",
+          toolCallId: "tool-locales",
+          toolName: "getLocalesClient",
+          suspendPayload: {},
+        },
+      } as any,
+    ],
+  };
+
+  const pending = getLatestSuspendedToolCall([message]);
+
+  assert.equal(pending?.toolName, "getLocalesClient");
+  assert.deepEqual(pending?.input, {});
 });
 
 test("review draft helpers preserve edited text and only bulk-approve safe changes", () => {

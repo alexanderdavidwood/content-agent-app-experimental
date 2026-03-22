@@ -9,16 +9,24 @@ import type {
   DiscoverCandidatesToolOutput,
   DraftProposalsToolInput,
   DraftProposalsToolOutput,
+  ExtractSearchFiltersToolInput,
+  ExtractSearchFiltersToolOutput,
   GetEntryDetailsToolInput,
   GetEntryDetailsToolOutput,
+  GetLocalesToolInput,
+  GetLocalesToolOutput,
   ListContentTypesToolInput,
   ListContentTypesToolOutput,
   ReadEntriesToolInput,
   ReadEntriesToolOutput,
   ReviewProposalsToolInput,
   ReviewProposalsToolOutput,
+  SearchEntriesToolInput,
+  SearchEntriesToolOutput,
   UpdateEntryAndPublishToolInput,
   UpdateEntryAndPublishToolOutput,
+  ValidateApprovedChangesToolInput,
+  ValidateApprovedChangesToolOutput,
 } from "@contentful-rename/shared";
 import {
   agentTraceDataSchema,
@@ -72,6 +80,18 @@ export type RenameChatTools = {
     input: ReadEntriesToolInput;
     output: ReadEntriesToolOutput;
   };
+  getLocalesClient: {
+    input: GetLocalesToolInput;
+    output: GetLocalesToolOutput;
+  };
+  extractSearchFilters: {
+    input: ExtractSearchFiltersToolInput;
+    output: ExtractSearchFiltersToolOutput;
+  };
+  searchEntriesClient: {
+    input: SearchEntriesToolInput;
+    output: SearchEntriesToolOutput;
+  };
   updateEntryAndPublishClient: {
     input: UpdateEntryAndPublishToolInput;
     output: UpdateEntryAndPublishToolOutput;
@@ -87,6 +107,10 @@ export type RenameChatTools = {
   reviewProposalsClient: {
     input: ReviewProposalsToolInput;
     output: ReviewProposalsToolOutput;
+  };
+  validateApprovedChangesClient: {
+    input: ValidateApprovedChangesToolInput;
+    output: ValidateApprovedChangesToolOutput;
   };
   applyApprovedChangesClient: {
     input: ApplyApprovedChangesToolInput;

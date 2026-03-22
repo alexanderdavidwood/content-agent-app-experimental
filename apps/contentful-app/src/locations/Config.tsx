@@ -12,6 +12,8 @@ const DEFAULT_PARAMETERS: AppInstallationParameters = {
   defaultDryRun: true,
   toolAvailability: {
     semanticSearch: true,
+    entrySearch: true,
+    preApplyValidation: true,
   },
 };
 
@@ -54,8 +56,9 @@ export default function Config() {
       <h1>Product Rename Agent configuration</h1>
       <p>
         Set the Mastra backend URL and constrain which content types the rename
-        workflow is allowed to scan. You can also disable semantic search if
-        the app should stay in keyword-only mode.
+        workflow is allowed to scan. You can also disable semantic search,
+        structured entry search, or pre-apply validation to keep the assistant
+        within a narrower operating mode.
       </p>
 
       <form style={{ display: "grid", gap: 16 }}>
@@ -155,6 +158,46 @@ export default function Config() {
           <p style={{ margin: 0, color: "#57534e" }}>
             When disabled, the agent is limited to keyword search even if a
             request asks for semantic or hybrid search.
+          </p>
+          <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <input
+              type="checkbox"
+              checked={parameters.toolAvailability.entrySearch}
+              onChange={(event) =>
+                setParameters((current) => ({
+                  ...current,
+                  toolAvailability: {
+                    ...current.toolAvailability,
+                    entrySearch: event.target.checked,
+                  },
+                }))
+              }
+            />
+            <span>Enable structured entry search</span>
+          </label>
+          <p style={{ margin: 0, color: "#57534e" }}>
+            When disabled, the agent will not plan or run general entry search
+            flows. Rename candidate discovery still works.
+          </p>
+          <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <input
+              type="checkbox"
+              checked={parameters.toolAvailability.preApplyValidation}
+              onChange={(event) =>
+                setParameters((current) => ({
+                  ...current,
+                  toolAvailability: {
+                    ...current.toolAvailability,
+                    preApplyValidation: event.target.checked,
+                  },
+                }))
+              }
+            />
+            <span>Enable pre-apply validation</span>
+          </label>
+          <p style={{ margin: 0, color: "#57534e" }}>
+            When enabled, approved rename operations are checked against current
+            entry versions, locales, and field definitions before apply.
           </p>
         </fieldset>
       </form>

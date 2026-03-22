@@ -9,11 +9,15 @@ function createContext() {
   return {
     requestContext: {
       defaultLocale: "en-US",
+      timeZone: "UTC",
+      currentDate: "2026-03-22",
       allowedContentTypes: [],
       maxDiscoveryQueries: 5,
       maxCandidatesPerRun: 30,
       toolAvailability: {
         semanticSearch: true,
+        entrySearch: true,
+        preApplyValidation: true,
       },
     },
     memory: {

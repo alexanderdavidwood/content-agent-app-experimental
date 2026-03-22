@@ -5,11 +5,23 @@ import {
   buildDefaultRenameInput,
   fallbackKeywordSearch,
   getEntryDetailsWithContentType,
+  getLocales,
   listContentTypes,
   performCandidateSearch,
   readEntries,
+  searchEntries,
   updateEntryAndPublish,
 } from "./contentfulClient";
+
+function createSdk(cma: any, overrides: Record<string, unknown> = {}) {
+  return {
+    cma,
+    cmaAdapter: {},
+    ids: { space: "space-id", environment: "master" },
+    parameters: {},
+    ...overrides,
+  } as any;
+}
 
 test("buildDefaultRenameInput prefers hybrid search to avoid missing exact matches", () => {
   const result = buildDefaultRenameInput({ surface: "page" }, "en-US");
@@ -134,10 +146,7 @@ test("performCandidateSearch falls back to keyword search when semantic app acti
   assert.deepEqual(calls, ["semantic.ensureIndex", "semantic.search"]);
   assert.equal(result.indexStatus?.status, "UNSUPPORTED");
   assert.deepEqual(result.searchResult.entryIds, ["porter-1", "porter-2"]);
-  assert.match(
-    result.searchResult.warnings.at(-1) ?? "",
-    /fell back to keyword search/i,
-  );
+  assert.match(result.searchResult.warnings.at(-1) ?? "", /fell back to keyword search/i);
 });
 
 test("performCandidateSearch enforces keyword mode when semantic search is disabled", async () => {
@@ -182,25 +191,12 @@ test("performCandidateSearch enforces keyword mode when semantic search is disab
 
   assert.deepEqual(calls, []);
   assert.deepEqual(result.searchResult.entryIds, ["porter-1", "porter-2"]);
-  assert.match(
-    result.searchResult.warnings[0] ?? "",
-    /Semantic search is disabled/i,
-  );
+  assert.match(result.searchResult.warnings[0] ?? "", /Semantic search is disabled/i);
 });
 
 test("listContentTypes returns requested content types and missing ids", async () => {
   const result = await listContentTypes(
-    {
-      cmaAdapter: {},
-      ids: { space: "space-id" },
-      parameters: {},
-    },
-    {
-      contentTypeIds: ["page", "missing"],
-      includeFields: true,
-      limit: 10,
-    },
-    {
+    createSdk({
       contentType: {
         async get({ contentTypeId }: { contentTypeId: string }) {
           if (contentTypeId === "missing") {
@@ -227,7 +223,12 @@ test("listContentTypes returns requested content types and missing ids", async (
         },
       },
       entry: {} as any,
-    } as any,
+    }),
+    {
+      contentTypeIds: ["page", "missing"],
+      includeFields: true,
+      limit: 10,
+    },
   );
 
   assert.deepEqual(result.requestedContentTypeIds, ["page", "missing"]);
@@ -236,19 +237,42 @@ test("listContentTypes returns requested content types and missing ids", async (
   assert.equal(result.contentTypes[0]?.fields?.[0]?.fieldId, "title");
 });
 
+test("listContentTypes loads all content types when no ids are requested", async () => {
+  const result = await listContentTypes(
+    createSdk({
+      contentType: {
+        async getMany() {
+          return {
+            items: [
+              {
+                sys: { id: "landingPage" },
+                name: "Landing page",
+                displayField: "title",
+                fields: [
+                  {
+                    id: "title",
+                    name: "Title",
+                    type: "Symbol",
+                    localized: true,
+                    required: true,
+                  },
+                ],
+              },
+            ],
+          };
+        },
+      },
+      entry: {} as any,
+    }),
+  );
+
+  assert.equal(result.contentTypes[0]?.contentTypeId, "landingPage");
+  assert.equal(result.contentTypes[0]?.fieldCount, 1);
+});
+
 test("getEntryDetailsWithContentType returns a localized entry plus content type metadata", async () => {
   const result = await getEntryDetailsWithContentType(
-    {
-      cmaAdapter: {},
-      ids: { space: "space-id" },
-      parameters: {},
-    },
-    {
-      entryId: "entry-1",
-      locale: "en-US",
-      includeContentTypeFields: true,
-    },
-    {
+    createSdk({
       entry: {
         async get() {
           return {
@@ -290,7 +314,12 @@ test("getEntryDetailsWithContentType returns a localized entry plus content type
           };
         },
       },
-    } as any,
+    }),
+    {
+      entryId: "entry-1",
+      locale: "en-US",
+      includeContentTypeFields: true,
+    },
   );
 
   assert.equal(result.locale, "en-US");
@@ -304,16 +333,7 @@ test("getEntryDetailsWithContentType returns a localized entry plus content type
 
 test("readEntries reports missing entries and preserves requested locale filters", async () => {
   const result = await readEntries(
-    {
-      cmaAdapter: {},
-      ids: { space: "space-id" },
-      parameters: {},
-    },
-    {
-      entryIds: ["entry-1", "missing"],
-      locales: ["en-US"],
-    },
-    {
+    createSdk({
       entry: {
         async get({ entryId }: { entryId: string }) {
           if (entryId === "missing") {
@@ -343,7 +363,11 @@ test("readEntries reports missing entries and preserves requested locale filters
         },
       },
       contentType: {} as any,
-    } as any,
+    }),
+    {
+      entryIds: ["entry-1", "missing"],
+      locales: ["en-US"],
+    },
   );
 
   assert.deepEqual(result.requestedEntryIds, ["entry-1", "missing"]);
@@ -356,26 +380,45 @@ test("readEntries reports missing entries and preserves requested locale filters
   });
 });
 
+test("readEntries can use entry.getMany for bulk reads", async () => {
+  const result = await readEntries(
+    createSdk({
+      entry: {
+        async getMany() {
+          return {
+            items: [
+              {
+                sys: {
+                  id: "entry-1",
+                  version: 3,
+                  updatedAt: "2026-03-22T10:00:00.000Z",
+                  contentType: { sys: { id: "landingPage" } },
+                },
+                fields: {
+                  title: {
+                    "en-US": "Acme landing page",
+                  },
+                },
+              },
+            ],
+          };
+        },
+      },
+      contentType: {} as any,
+    }),
+    {
+      entryIds: ["entry-1"],
+    },
+  );
+
+  assert.equal(result.entries[0]?.fields.title?.["en-US"], "Acme landing page");
+});
+
 test("updateEntryAndPublish retries once after a version mismatch", async () => {
   const seenVersions: number[] = [];
   let getCount = 0;
   const result = await updateEntryAndPublish(
-    {
-      cmaAdapter: {},
-      ids: { space: "space-id" },
-      parameters: {},
-    },
-    {
-      entryId: "entry-1",
-      updates: [
-        {
-          fieldId: "title",
-          locale: "en-US",
-          value: "Updated title",
-        },
-      ],
-    },
-    {
+    createSdk({
       entry: {
         async get() {
           getCount += 1;
@@ -458,21 +501,7 @@ test("updateEntryAndPublish retries once after a version mismatch", async () => 
           };
         },
       },
-    } as any,
-  );
-
-  assert.deepEqual(seenVersions, [2, 3]);
-  assert.equal(result.status, "PUBLISHED");
-  assert.equal(result.version, 5);
-});
-
-test("updateEntryAndPublish reports UPDATED_NOT_PUBLISHED when publish fails", async () => {
-  const result = await updateEntryAndPublish(
-    {
-      cmaAdapter: {},
-      ids: { space: "space-id" },
-      parameters: {},
-    },
+    }),
     {
       entryId: "entry-1",
       updates: [
@@ -483,7 +512,16 @@ test("updateEntryAndPublish reports UPDATED_NOT_PUBLISHED when publish fails", a
         },
       ],
     },
-    {
+  );
+
+  assert.deepEqual(seenVersions, [2, 3]);
+  assert.equal(result.status, "PUBLISHED");
+  assert.equal(result.version, 5);
+});
+
+test("updateEntryAndPublish reports UPDATED_NOT_PUBLISHED when publish fails", async () => {
+  const result = await updateEntryAndPublish(
+    createSdk({
       entry: {
         async get() {
           return {
@@ -542,9 +580,114 @@ test("updateEntryAndPublish reports UPDATED_NOT_PUBLISHED when publish fails", a
           };
         },
       },
-    } as any,
+    }),
+    {
+      entryId: "entry-1",
+      updates: [
+        {
+          fieldId: "title",
+          locale: "en-US",
+          value: "Updated title",
+        },
+      ],
+    },
   );
 
   assert.equal(result.status, "UPDATED_NOT_PUBLISHED");
   assert.match(result.message ?? "", /publish denied/i);
+});
+
+test("getLocales maps CMA locale fields correctly", async () => {
+  const result = await getLocales(
+    createSdk({
+      locale: {
+        async getMany() {
+          return {
+            items: [
+              {
+                code: "en-US",
+                name: "English (United States)",
+                default: true,
+              },
+              {
+                code: "de-DE",
+                name: "German (Germany)",
+                default: false,
+                fallbackCode: "en-US",
+              },
+            ],
+          };
+        },
+      },
+    }),
+  );
+
+  assert.equal(result.locales[0]?.default, true);
+  assert.equal(result.locales[1]?.fallbackCode, "en-US");
+});
+
+test("searchEntries builds the expected CMA query and resolves display field values", async () => {
+  let seenQuery: Record<string, unknown> | undefined;
+  const result = await searchEntries(
+    createSdk({
+      entry: {
+        async getMany({ query }: { query: Record<string, unknown> }) {
+          seenQuery = query;
+          return {
+            total: 1,
+            items: [
+              {
+                sys: {
+                  id: "entry-1",
+                  version: 7,
+                  updatedAt: "2026-03-22T10:00:00.000Z",
+                  publishedAt: "2026-03-20T10:00:00.000Z",
+                  contentType: { sys: { id: "landingPage" } },
+                },
+                fields: {
+                  title: {
+                    "en-US": "Acme Core",
+                  },
+                },
+              },
+            ],
+          };
+        },
+      },
+      contentType: {
+        async get({ contentTypeId }: { contentTypeId: string }) {
+          assert.equal(contentTypeId, "landingPage");
+          return {
+            sys: { id: "landingPage" },
+            displayField: "title",
+            fields: [],
+          };
+        },
+      },
+    }),
+    {
+      queryText: "Acme",
+      contentTypeIds: ["landingPage"],
+      status: "draft",
+      updatedAtFrom: "2026-03-15",
+      updatedAtTo: "2026-03-22",
+      limit: 10,
+    },
+    {
+      defaultLocale: "en-US",
+    },
+  );
+
+  assert.deepEqual(seenQuery, {
+    order: "-sys.updatedAt",
+    limit: 10,
+    query: "Acme",
+    content_type: "landingPage",
+    "sys.publishedAt[exists]": "false",
+    "sys.archivedAt[exists]": "false",
+    "sys.updatedAt[gte]": "2026-03-15T00:00:00.000Z",
+    "sys.updatedAt[lte]": "2026-03-22T23:59:59.999Z",
+  });
+  assert.equal(result.total, 1);
+  assert.equal(result.entries[0]?.displayFieldValue, "Acme Core");
 });

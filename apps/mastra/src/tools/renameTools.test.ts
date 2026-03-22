@@ -9,28 +9,36 @@ import {
   discoverCandidatesToolInputSchema,
   draftProposalsToolOutputSchema,
   reviewProposalsToolOutputSchema,
+  validateApprovedChangesToolInputSchema,
 } from "@contentful-rename/shared";
 
 import {
   discoverCandidatesClientTool,
   draftProposalsTool,
   reviewProposalsClientTool,
+  validateApprovedChangesClientTool,
 } from "./renameTools";
 
 const chatContext: ChatExecutionContext = {
   defaultLocale: "en-US",
+  timeZone: "UTC",
+  currentDate: "2026-03-22",
   surfaceContext: { surface: "page" },
   allowedContentTypes: ["page"],
   maxDiscoveryQueries: 5,
   maxCandidatesPerRun: 30,
   toolAvailability: {
     semanticSearch: true,
+    entrySearch: true,
+    preApplyValidation: true,
   },
 };
 
 function createRequestContext() {
   const requestContext = new RequestContext<ChatExecutionContext>();
   requestContext.set("defaultLocale", chatContext.defaultLocale);
+  requestContext.set("timeZone", chatContext.timeZone);
+  requestContext.set("currentDate", chatContext.currentDate);
   requestContext.set("surfaceContext", chatContext.surfaceContext);
   requestContext.set("allowedContentTypes", chatContext.allowedContentTypes);
   requestContext.set("maxDiscoveryQueries", chatContext.maxDiscoveryQueries);
@@ -74,6 +82,8 @@ test("discoverCandidatesClientTool forces keyword mode when semantic search is d
   const disabledContext = createRequestContext();
   disabledContext.set("toolAvailability", {
     semanticSearch: false,
+    entrySearch: true,
+    preApplyValidation: true,
   });
 
   await discoverCandidatesClientTool.execute!(
@@ -174,4 +184,37 @@ test("reviewProposalsClientTool returns validated review data on resume", async 
       cancelled: true,
     }),
   );
+});
+
+test("validateApprovedChangesClientTool suspends with the apply payload", async () => {
+  let suspendedPayload: unknown;
+
+  await validateApprovedChangesClientTool.execute!(
+    {
+      runId: "run-validate",
+      input: {
+        oldProductName: "Acme Lite",
+        newProductName: "Acme Core",
+        defaultLocale: "en-US",
+        searchMode: "semantic",
+        contentTypeIds: [],
+      },
+      candidateSnapshots: [],
+      proposedChanges: [],
+      approvals: [],
+    },
+    {
+      requestContext: createRequestContext(),
+      agent: {
+        toolCallId: "tool-validate",
+        messages: [],
+        suspend: async (payload: unknown) => {
+          suspendedPayload = payload;
+        },
+      },
+    } as any,
+  );
+
+  const parsed = validateApprovedChangesToolInputSchema.parse(suspendedPayload);
+  assert.equal(parsed.runId, "run-validate");
 });

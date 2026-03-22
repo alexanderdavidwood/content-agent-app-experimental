@@ -3,37 +3,15 @@ import {
   parseChatDebugError,
   type AgentTraceData,
   type ApprovedChange,
-  type ApplyApprovedChangesToolInput,
-  type GetEntryDetailsToolInput,
-  type GetEntryDetailsToolOutput,
-  type ListContentTypesToolInput,
-  type ListContentTypesToolOutput,
-  type ReadEntriesToolInput,
-  type ReadEntriesToolOutput,
-  type DiscoverCandidatesToolInput,
-  type DiscoverCandidatesToolOutput,
   type ProposedChange,
   type ReviewProposalsToolInput,
   type ReviewProposalsToolOutput,
-  type UpdateEntryAndPublishToolInput,
-  type UpdateEntryAndPublishToolOutput,
-  applyApprovedChangesToolInputSchema,
-  applyApprovedChangesToolOutputSchema,
-  discoverCandidatesToolInputSchema,
-  discoverCandidatesToolOutputSchema,
-  getEntryDetailsToolInputSchema,
-  getEntryDetailsToolOutputSchema,
-  listContentTypesToolInputSchema,
-  listContentTypesToolOutputSchema,
-  readEntriesToolInputSchema,
-  readEntriesToolOutputSchema,
   reviewProposalsToolInputSchema,
   reviewProposalsToolOutputSchema,
-  updateEntryAndPublishToolInputSchema,
-  updateEntryAndPublishToolOutputSchema,
 } from "@contentful-rename/shared";
 
-import type { RenameChatMessage } from "./chatTypes";
+import { getSuspendedClientToolDefinition } from "./clientToolRegistry";
+import type { RenameChatMessage, RenameChatTools } from "./chatTypes";
 import {
   LEGACY_TOOL_CALL_APPROVAL_PART_TYPE,
   LEGACY_TOOL_CALL_SUSPENDED_PART_TYPE,
@@ -52,49 +30,19 @@ export type ReviewDraftItem = {
 
 export type ReviewDraftMap = Record<string, ReviewDraftItem>;
 
-export type SuspendedToolCall =
-  | {
-      toolName: "listContentTypesClient";
-      runId: string;
-      toolCallId: string;
-      input: ListContentTypesToolInput;
-    }
-  | {
-      toolName: "getEntryDetailsClient";
-      runId: string;
-      toolCallId: string;
-      input: GetEntryDetailsToolInput;
-    }
-  | {
-      toolName: "readEntriesClient";
-      runId: string;
-      toolCallId: string;
-      input: ReadEntriesToolInput;
-    }
-  | {
-      toolName: "updateEntryAndPublishClient";
-      runId: string;
-      toolCallId: string;
-      input: UpdateEntryAndPublishToolInput;
-    }
-  | {
-      toolName: "discoverCandidatesClient";
-      runId: string;
-      toolCallId: string;
-      input: DiscoverCandidatesToolInput;
-    }
-  | {
-      toolName: "reviewProposalsClient";
-      runId: string;
-      toolCallId: string;
-      input: ReviewProposalsToolInput;
-    }
-  | {
-      toolName: "applyApprovedChangesClient";
-      runId: string;
-      toolCallId: string;
-      input: ApplyApprovedChangesToolInput;
-    };
+type SuspendedToolName = Exclude<
+  keyof RenameChatTools,
+  "draftProposals" | "extractSearchFilters"
+>;
+
+export type SuspendedToolCall = {
+  [Name in SuspendedToolName]: {
+    toolName: Name;
+    runId: string;
+    toolCallId: string;
+    input: RenameChatTools[Name]["input"];
+  };
+}[SuspendedToolName];
 
 type LatestToolPart = {
   type: string;
@@ -122,7 +70,7 @@ export function buildWelcomeMessage(): RenameChatMessage {
       {
         type: "text",
         text:
-          'Ask to inspect content types, read entries, publish an entry update, or explore a rename. Example: Rename "Acme Lite" to "Acme Core", search marketing pages first, and wait for approval before applying.',
+          'Ask for a rename or inspect the space first. Examples: "Rename Acme Lite to Acme Core and wait for approval before applying", "What locales are available here?", "Inspect content types for landing pages", or "Find draft landing pages about Acme updated last week."',
       },
     ],
   };
@@ -209,59 +157,17 @@ export function getLatestSuspendedToolCall(
       continue;
     }
 
-    switch (data.toolName) {
-      case "listContentTypesClient":
-        return {
-          toolName: data.toolName,
-          runId: data.runId,
-          toolCallId: data.toolCallId,
-          input: listContentTypesToolInputSchema.parse(data.suspendPayload),
-        };
-      case "getEntryDetailsClient":
-        return {
-          toolName: data.toolName,
-          runId: data.runId,
-          toolCallId: data.toolCallId,
-          input: getEntryDetailsToolInputSchema.parse(data.suspendPayload),
-        };
-      case "readEntriesClient":
-        return {
-          toolName: data.toolName,
-          runId: data.runId,
-          toolCallId: data.toolCallId,
-          input: readEntriesToolInputSchema.parse(data.suspendPayload),
-        };
-      case "updateEntryAndPublishClient":
-        return {
-          toolName: data.toolName,
-          runId: data.runId,
-          toolCallId: data.toolCallId,
-          input: updateEntryAndPublishToolInputSchema.parse(data.suspendPayload),
-        };
-      case "discoverCandidatesClient":
-        return {
-          toolName: data.toolName,
-          runId: data.runId,
-          toolCallId: data.toolCallId,
-          input: discoverCandidatesToolInputSchema.parse(data.suspendPayload),
-        };
-      case "reviewProposalsClient":
-        return {
-          toolName: data.toolName,
-          runId: data.runId,
-          toolCallId: data.toolCallId,
-          input: reviewProposalsToolInputSchema.parse(data.suspendPayload),
-        };
-      case "applyApprovedChangesClient":
-        return {
-          toolName: data.toolName,
-          runId: data.runId,
-          toolCallId: data.toolCallId,
-          input: applyApprovedChangesToolInputSchema.parse(data.suspendPayload),
-        };
-      default:
-        break;
+    const definition = getSuspendedClientToolDefinition(data.toolName);
+    if (!definition) {
+      continue;
     }
+
+    return {
+      toolName: definition.toolName,
+      runId: data.runId,
+      toolCallId: data.toolCallId,
+      input: definition.parseInput(data.suspendPayload),
+    } as SuspendedToolCall;
   }
 
   return null;
@@ -370,32 +276,4 @@ export function getLatestAgentTrace(
   }
 
   return null;
-}
-
-export function parseDiscoverCandidatesOutput(
-  output: unknown,
-): DiscoverCandidatesToolOutput {
-  return discoverCandidatesToolOutputSchema.parse(output);
-}
-
-export function parseListContentTypesOutput(output: unknown): ListContentTypesToolOutput {
-  return listContentTypesToolOutputSchema.parse(output);
-}
-
-export function parseGetEntryDetailsOutput(output: unknown): GetEntryDetailsToolOutput {
-  return getEntryDetailsToolOutputSchema.parse(output);
-}
-
-export function parseReadEntriesOutput(output: unknown): ReadEntriesToolOutput {
-  return readEntriesToolOutputSchema.parse(output);
-}
-
-export function parseApplyApprovedChangesOutput(output: unknown) {
-  return applyApprovedChangesToolOutputSchema.parse(output);
-}
-
-export function parseUpdateEntryAndPublishOutput(
-  output: unknown,
-): UpdateEntryAndPublishToolOutput {
-  return updateEntryAndPublishToolOutputSchema.parse(output);
 }

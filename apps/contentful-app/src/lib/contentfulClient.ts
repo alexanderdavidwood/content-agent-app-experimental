@@ -2,6 +2,8 @@ import * as contentfulManagement from "contentful-management";
 
 import type {
   AgentSurfaceContext,
+  ApplyApprovedChangesToolInput,
+  ApplyApprovedChangesToolOutput,
   ApplyOperation,
   ApplyResult,
   CandidateEntrySnapshot,
@@ -9,8 +11,12 @@ import type {
   ContentEntryRecord,
   ContentTypeFieldSummary,
   ContentTypeSummary,
+  DiscoverCandidatesToolInput,
+  DiscoverCandidatesToolOutput,
+  EntrySearchFilters,
   GetEntryDetailsToolInput,
   GetEntryDetailsToolOutput,
+  GetLocalesToolOutput,
   ListContentTypesToolInput,
   ListContentTypesToolOutput,
   ProposedChange,
@@ -18,22 +24,35 @@ import type {
   ReadEntriesToolOutput,
   RenameRunInput,
   RichTextNode,
+  SearchEntriesToolInput,
+  SearchEntriesToolOutput,
   SemanticEnsureIndexResult,
   SemanticSearchResult,
   UpdateEntryAndPublishToolInput,
   UpdateEntryAndPublishToolOutput,
+  ValidateApprovedChangesToolInput,
+  ValidateApprovedChangesToolOutput,
+  ValidationIssue,
 } from "@contentful-rename/shared";
 import {
+  CONTENTFUL_SUPPORTED_FIELD_TYPES,
   appInstallationParametersSchema,
   extractRichTextSegments,
   getEntryDetailsToolOutputSchema,
+  getLocalesToolOutputSchema,
   listContentTypesToolOutputSchema,
   readEntriesToolOutputSchema,
+  searchEntriesToolOutputSchema,
   updateEntryAndPublishToolOutputSchema,
+  validateApprovedChangesToolOutputSchema,
 } from "@contentful-rename/shared";
 
 import { applyProposedRichTextChange, groupOperationsByEntry } from "./richTextPatch";
-import { normalizeSearchQueries, SEARCH_QUERY_CAP } from "./searchQueries";
+import {
+  buildSearchQueries,
+  normalizeSearchQueries,
+  SEARCH_QUERY_CAP,
+} from "./searchQueries";
 
 type EntryLike = {
   sys: {
@@ -43,6 +62,7 @@ type EntryLike = {
     updatedAt: string;
     publishedAt?: string;
     publishedVersion?: number;
+    archivedAt?: string;
     contentType: {
       sys: {
         id: string;
@@ -75,6 +95,13 @@ type ContentTypeLike = {
   }>;
 };
 
+type LocaleLike = {
+  code: string;
+  name: string;
+  default?: boolean;
+  fallbackCode?: string | null;
+};
+
 type SdkLike = {
   cmaAdapter: unknown;
   cma?: unknown;
@@ -99,15 +126,19 @@ type KeywordSearchClientOverride = {
 type CmaClientLike = {
   contentType: {
     get(args: { contentTypeId: string }): Promise<ContentTypeLike>;
-    getMany?(args: { limit: number }): Promise<{ items?: ContentTypeLike[] }>;
+    getMany?(args: unknown): Promise<{ items?: ContentTypeLike[] }>;
   };
   entry: {
     get(args: { entryId: string }): Promise<EntryLike>;
+    getMany?(args: unknown): Promise<{ items?: EntryLike[]; total?: number }>;
     update(
       args: { entryId: string },
       payload: { fields: Record<string, Record<string, unknown>>; sys: { version: number } },
     ): Promise<EntryLike>;
     publish(args: { entryId: string }, payload: EntryLike): Promise<EntryLike>;
+  };
+  locale?: {
+    getMany?(args: unknown): Promise<{ items?: LocaleLike[] }>;
   };
 };
 
@@ -140,6 +171,8 @@ const DEFAULT_INSTALLATION_PARAMETERS = {
   defaultDryRun: true,
   toolAvailability: {
     semanticSearch: true,
+    entrySearch: true,
+    preApplyValidation: true,
   },
 } as const;
 
@@ -186,6 +219,10 @@ export function getInstallationParameters(sdk: SdkLike) {
 }
 
 export function createCmaClient(sdk: SdkLike) {
+  if (sdk.cma) {
+    return sdk.cma as any;
+  }
+
   return contentfulManagement.createClient(
     { apiAdapter: sdk.cmaAdapter as never },
     {
@@ -293,6 +330,7 @@ function toContentEntryRecord(
     updatedAt: entry.sys.updatedAt,
     publishedAt: entry.sys.publishedAt,
     publishedVersion: entry.sys.publishedVersion,
+    archivedAt: entry.sys.archivedAt,
     fields: filterEntryFields(entry.fields ?? {}, locales),
   };
 }
@@ -338,16 +376,27 @@ function buildUpdatedFields(
 
 export async function listContentTypes(
   sdk: SdkLike,
-  input: ListContentTypesToolInput,
+  input: Partial<ListContentTypesToolInput> = {},
   cmaOverride?: CmaClientLike,
 ): Promise<ListContentTypesToolOutput> {
   const cma = cmaOverride ?? (createCmaClient(sdk) as unknown as CmaClientLike);
-  const requestedContentTypeIds = uniqueStrings(input.contentTypeIds);
+  const parsedInput = {
+    contentTypeIds: uniqueStrings(input.contentTypeIds ?? []),
+    includeFields: input.includeFields ?? false,
+    limit: input.limit ?? 20,
+  } satisfies ListContentTypesToolInput;
+  const requestedContentTypeIds = parsedInput.contentTypeIds;
 
   if (requestedContentTypeIds.length === 0) {
-    const response = await cma.contentType.getMany?.({ limit: input.limit });
+    const response = await cma.contentType.getMany?.({
+      limit: parsedInput.limit,
+      query: {
+        limit: parsedInput.limit,
+        order: "name",
+      },
+    });
     const contentTypes = (response?.items ?? []).map((contentType) =>
-      toContentTypeSummary(contentType, input.includeFields),
+      toContentTypeSummary(contentType, parsedInput.includeFields),
     );
 
     return listContentTypesToolOutputSchema.parse({
@@ -363,7 +412,7 @@ export async function listContentTypes(
   for (const contentTypeId of requestedContentTypeIds) {
     try {
       const contentType = await cma.contentType.get({ contentTypeId });
-      contentTypes.push(toContentTypeSummary(contentType, input.includeFields));
+      contentTypes.push(toContentTypeSummary(contentType, parsedInput.includeFields));
     } catch (error) {
       if (isNotFoundError(error)) {
         missingContentTypeIds.push(contentTypeId);
@@ -401,14 +450,50 @@ export async function getEntryDetailsWithContentType(
 
 export async function readEntries(
   sdk: SdkLike,
-  input: ReadEntriesToolInput,
+  input: { entryIds: string[]; locales?: string[] },
   cmaOverride?: CmaClientLike,
 ): Promise<ReadEntriesToolOutput> {
   const cma = cmaOverride ?? (createCmaClient(sdk) as unknown as CmaClientLike);
   const requestedEntryIds = uniqueStrings(input.entryIds);
-  const locales = uniqueStrings(input.locales);
+  const locales = uniqueStrings(input.locales ?? []);
   const entries: ContentEntryRecord[] = [];
   const missingEntryIds: string[] = [];
+
+  if (requestedEntryIds.length === 0) {
+    return readEntriesToolOutputSchema.parse({
+      requestedEntryIds,
+      locales,
+      entries,
+      missingEntryIds,
+    });
+  }
+
+  if (cma.entry.getMany) {
+    const response = await cma.entry.getMany({
+      query: {
+        "sys.id[in]": requestedEntryIds.join(","),
+        limit: requestedEntryIds.length,
+      },
+    });
+    const items = (response?.items ?? []) as EntryLike[];
+    const entryById = new Map(items.map((item) => [item.sys.id, item] as const));
+
+    for (const entryId of requestedEntryIds) {
+      const entry = entryById.get(entryId);
+      if (entry) {
+        entries.push(toContentEntryRecord(entry, locales));
+      } else {
+        missingEntryIds.push(entryId);
+      }
+    }
+
+    return readEntriesToolOutputSchema.parse({
+      requestedEntryIds,
+      locales,
+      entries,
+      missingEntryIds,
+    });
+  }
 
   for (const entryId of requestedEntryIds) {
     try {
@@ -762,6 +847,435 @@ export async function applyOperations(
   }
 
   return results;
+}
+
+function escapeRegex(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function buildNameVariants(name: string) {
+  const trimmed = name.trim();
+  const variants = new Set<string>([
+    trimmed,
+    `${trimmed}s`,
+    `${trimmed}'s`,
+    `${trimmed}’s`,
+    trimmed.replace(/\s+/g, "-"),
+    trimmed.replace(/-/g, " "),
+  ]);
+
+  return [...variants].filter(Boolean);
+}
+
+function candidateContainsVariant(candidate: CandidateEntrySnapshot, variants: string[]) {
+  return candidate.fields.some((field) => {
+    const values: string[] = [];
+    if (typeof field.rawValue === "string") {
+      values.push(field.rawValue);
+    }
+
+    for (const segment of field.segments) {
+      values.push(segment.text);
+    }
+
+    return values.some((value) =>
+      variants.some((variant) => new RegExp(escapeRegex(variant), "i").test(value)),
+    );
+  });
+}
+
+function startOfDayIso(date: string) {
+  return `${date}T00:00:00.000Z`;
+}
+
+function endOfDayIso(date: string) {
+  return `${date}T23:59:59.999Z`;
+}
+
+function buildEntrySearchQuery(filters: EntrySearchFilters) {
+  const query: Record<string, unknown> = {
+    order: "-sys.updatedAt",
+    limit: filters.limit,
+  };
+
+  if (filters.queryText) {
+    query.query = filters.queryText;
+  }
+
+  if (filters.contentTypeIds.length === 1) {
+    query.content_type = filters.contentTypeIds[0];
+  } else if (filters.contentTypeIds.length > 1) {
+    query["sys.contentType.sys.id[in]"] = filters.contentTypeIds.join(",");
+  }
+
+  if (filters.status === "published") {
+    query["sys.publishedAt[exists]"] = "true";
+    query["sys.archivedAt[exists]"] = "false";
+  }
+
+  if (filters.status === "draft") {
+    query["sys.publishedAt[exists]"] = "false";
+    query["sys.archivedAt[exists]"] = "false";
+  }
+
+  if (filters.status === "archived") {
+    query["sys.archivedAt[exists]"] = "true";
+  }
+
+  if (filters.createdAtFrom) {
+    query["sys.createdAt[gte]"] = startOfDayIso(filters.createdAtFrom);
+  }
+
+  if (filters.createdAtTo) {
+    query["sys.createdAt[lte]"] = endOfDayIso(filters.createdAtTo);
+  }
+
+  if (filters.updatedAtFrom) {
+    query["sys.updatedAt[gte]"] = startOfDayIso(filters.updatedAtFrom);
+  }
+
+  if (filters.updatedAtTo) {
+    query["sys.updatedAt[lte]"] = endOfDayIso(filters.updatedAtTo);
+  }
+
+  if (filters.publishedAtFrom) {
+    query["sys.publishedAt[gte]"] = startOfDayIso(filters.publishedAtFrom);
+  }
+
+  if (filters.publishedAtTo) {
+    query["sys.publishedAt[lte]"] = endOfDayIso(filters.publishedAtTo);
+  }
+
+  return query;
+}
+
+function resolveStringFieldValue(
+  entry: EntryLike,
+  displayFieldId: string | undefined,
+  locale: string,
+) {
+  if (!displayFieldId) {
+    return undefined;
+  }
+
+  const value = entry.fields[displayFieldId]?.[locale];
+  return typeof value === "string" ? value : undefined;
+}
+
+export async function discoverRenameCandidates(
+  sdk: SdkLike,
+  toolInput: DiscoverCandidatesToolInput,
+  options: {
+    maxDiscoveryQueries?: number;
+    semanticSearchEnabled?: boolean;
+  } = {},
+): Promise<DiscoverCandidatesToolOutput> {
+  const renameInput = toolInput.input;
+  const searchQueries = buildSearchQueries({
+    discoveryQueries: toolInput.discoveryPlan.queries,
+    oldProductName: renameInput.oldProductName,
+    maxDiscoveryQueries: options.maxDiscoveryQueries,
+  });
+  const { indexStatus, searchResult } = await performCandidateSearch(sdk, {
+    defaultLocale: renameInput.defaultLocale,
+    searchMode: renameInput.searchMode,
+    queries: searchQueries,
+    limitPerQuery: Math.min(toolInput.maxCandidatesPerRun, 10),
+    semanticSearchEnabled: options.semanticSearchEnabled,
+  });
+  const snapshots = await fetchEntrySnapshots(
+    sdk,
+    searchResult.entryIds.slice(0, toolInput.maxCandidatesPerRun),
+    renameInput.defaultLocale,
+    renameInput.contentTypeIds,
+  );
+  const variants = buildNameVariants(renameInput.oldProductName);
+  const lexicalMatches = snapshots.filter((candidate) =>
+    candidateContainsVariant(candidate, variants),
+  );
+
+  return {
+    runId: toolInput.runId,
+    indexStatus,
+    searchResult,
+    candidateSnapshots:
+      lexicalMatches.length > 0
+        ? lexicalMatches
+        : snapshots.slice(0, toolInput.maxCandidatesPerRun),
+  };
+}
+
+export async function applyApprovedChanges(
+  sdk: SdkLike,
+  toolInput: ApplyApprovedChangesToolInput,
+): Promise<ApplyApprovedChangesToolOutput> {
+  const approvals = Object.fromEntries(
+    toolInput.approvals.map((approval) => [
+      approval.changeId,
+      {
+        approved: approval.approved,
+        editedText: approval.editedText,
+      },
+    ]),
+  );
+  const operations = buildApplyOperations(
+    toolInput.candidateSnapshots,
+    toolInput.proposedChanges,
+    approvals,
+  );
+  const results = await applyOperations(sdk, operations);
+
+  return {
+    runId: toolInput.runId,
+    results,
+  };
+}
+
+export async function getLocales(
+  sdk: SdkLike,
+): Promise<GetLocalesToolOutput> {
+  const cma = createCmaClient(sdk) as any;
+  const response = await cma.locale.getMany({
+    query: {
+      limit: 1000,
+      order: "name",
+    },
+  });
+
+  return getLocalesToolOutputSchema.parse({
+    locales: (response?.items ?? []).map((locale: LocaleLike) => ({
+      code: locale.code,
+      name: locale.name,
+      fallbackCode: locale.fallbackCode ?? undefined,
+      default: Boolean(locale.default),
+    })),
+  });
+}
+
+export async function searchEntries(
+  sdk: SdkLike,
+  filters: SearchEntriesToolInput,
+  options: {
+    defaultLocale: string;
+  },
+): Promise<SearchEntriesToolOutput> {
+  const cma = createCmaClient(sdk) as any;
+  const response = await cma.entry.getMany({
+    query: buildEntrySearchQuery(filters),
+  });
+  const items = (response?.items ?? []) as EntryLike[];
+  const contentTypeIds = [...new Set(items.map((item) => item.sys.contentType.sys.id))];
+  const contentTypes = await Promise.all(
+    contentTypeIds.map(async (contentTypeId) => [
+      contentTypeId,
+      (await cma.contentType.get({ contentTypeId })) as ContentTypeLike,
+    ] as const),
+  );
+  const contentTypeMap = new Map<string, ContentTypeLike>(contentTypes);
+
+  return searchEntriesToolOutputSchema.parse({
+    filters,
+    total:
+      typeof response?.total === "number" && Number.isFinite(response.total)
+        ? response.total
+        : undefined,
+    entries: items.map((entry) => {
+      const contentType = contentTypeMap.get(entry.sys.contentType.sys.id);
+      const displayFieldId = contentType?.displayField;
+
+      return {
+        entryId: entry.sys.id,
+        contentTypeId: entry.sys.contentType.sys.id,
+        version: entry.sys.version,
+        updatedAt: entry.sys.updatedAt,
+        publishedAt: entry.sys.publishedAt,
+        displayFieldId,
+        displayFieldValue: resolveStringFieldValue(
+          entry,
+          displayFieldId,
+          options.defaultLocale,
+        ),
+      };
+    }),
+    warnings: [],
+  });
+}
+
+export async function validateApprovedChanges(
+  sdk: SdkLike,
+  toolInput: ValidateApprovedChangesToolInput,
+): Promise<ValidateApprovedChangesToolOutput> {
+  const approvals = Object.fromEntries(
+    toolInput.approvals.map((approval) => [
+      approval.changeId,
+      {
+        approved: approval.approved,
+        editedText: approval.editedText,
+      },
+    ]),
+  );
+  const operations = buildApplyOperations(
+    toolInput.candidateSnapshots,
+    toolInput.proposedChanges,
+    approvals,
+  );
+  const blockingIssues: ValidationIssue[] = [];
+  const warnings: ValidationIssue[] = [];
+
+  if (operations.length === 0) {
+    warnings.push({
+      code: "no_operations",
+      severity: "warning",
+      message: "No approved changes produced apply operations.",
+    });
+  }
+
+  const approvedChangeIds = new Set(
+    toolInput.approvals.filter((approval) => approval.approved).map((approval) => approval.changeId),
+  );
+  for (const change of toolInput.proposedChanges) {
+    if (approvedChangeIds.has(change.changeId) && change.riskFlags.length > 0) {
+      warnings.push({
+        code: "risk_flag_present",
+        severity: "warning",
+        message: `Approved change ${change.changeId} still has risk flags: ${change.riskFlags.join(", ")}.`,
+        entryId: change.entryId,
+        fieldId: change.fieldId,
+        locale: change.locale,
+      });
+    }
+  }
+
+  const operationTargets = new Set<string>();
+  for (const operation of operations) {
+    const key = [
+      operation.entryId,
+      operation.fieldId,
+      operation.locale,
+      operation.segmentId ?? "",
+    ].join(":");
+
+    if (operationTargets.has(key)) {
+      blockingIssues.push({
+        code: "duplicate_operation_target",
+        severity: "blocking",
+        message: "Multiple approved changes target the same entry field and locale.",
+        entryId: operation.entryId,
+        fieldId: operation.fieldId,
+        locale: operation.locale,
+      });
+      continue;
+    }
+
+    operationTargets.add(key);
+  }
+
+  const locales = await getLocales(sdk);
+  const localeCodes = new Set(locales.locales.map((locale) => locale.code));
+  const touchedEntryIds = [...new Set(operations.map((operation) => operation.entryId))];
+  const currentEntries =
+    touchedEntryIds.length === 0
+      ? { entries: [] as ContentEntryRecord[] }
+      : await readEntries(sdk, {
+          entryIds: touchedEntryIds,
+        }).catch(() => ({ entries: [] as ContentEntryRecord[] }));
+  const currentEntryMap = new Map(
+    currentEntries.entries.map((entry) => [entry.entryId, entry] as const),
+  );
+  const snapshotVersionMap = new Map(
+    toolInput.candidateSnapshots.map((snapshot) => [snapshot.entryId, snapshot.version] as const),
+  );
+
+  const touchedContentTypeIds = [
+    ...new Set(currentEntries.entries.map((entry) => entry.contentTypeId)),
+  ];
+  const cma = createCmaClient(sdk) as any;
+  const contentTypePairs = await Promise.all(
+    touchedContentTypeIds.map(async (contentTypeId) => [
+      contentTypeId,
+      (await cma.contentType.get({ contentTypeId })) as ContentTypeLike,
+    ] as const),
+  );
+  const contentTypeMap = new Map<string, ContentTypeLike>(contentTypePairs);
+
+  for (const operation of operations) {
+    const currentEntry = currentEntryMap.get(operation.entryId);
+    if (!currentEntry) {
+      blockingIssues.push({
+        code: "entry_missing",
+        severity: "blocking",
+        message: "The entry no longer exists or is no longer accessible.",
+        entryId: operation.entryId,
+      });
+      continue;
+    }
+
+    const expectedVersion = snapshotVersionMap.get(operation.entryId);
+    if (
+      typeof expectedVersion === "number" &&
+      currentEntry.version !== expectedVersion
+    ) {
+      blockingIssues.push({
+        code: "version_mismatch",
+        severity: "blocking",
+        message: `Entry version changed from ${expectedVersion} to ${currentEntry.version}.`,
+        entryId: operation.entryId,
+      });
+    }
+
+    if (!localeCodes.has(operation.locale)) {
+      blockingIssues.push({
+        code: "locale_missing",
+        severity: "blocking",
+        message: `Locale ${operation.locale} is not available in this space.`,
+        entryId: operation.entryId,
+        fieldId: operation.fieldId,
+        locale: operation.locale,
+      });
+      continue;
+    }
+
+    const contentType = contentTypeMap.get(currentEntry.contentTypeId);
+    const field = contentType?.fields.find(
+      (candidate: ContentTypeLike["fields"][number]) =>
+        candidate.id === operation.fieldId,
+    );
+
+    if (!field) {
+      blockingIssues.push({
+        code: "field_missing",
+        severity: "blocking",
+        message: `Field ${operation.fieldId} is not defined on content type ${currentEntry.contentTypeId}.`,
+        entryId: operation.entryId,
+        fieldId: operation.fieldId,
+        locale: operation.locale,
+      });
+      continue;
+    }
+
+    if (
+      !CONTENTFUL_SUPPORTED_FIELD_TYPES.includes(
+        field.type as (typeof CONTENTFUL_SUPPORTED_FIELD_TYPES)[number],
+      )
+    ) {
+      blockingIssues.push({
+        code: "unsupported_field_type",
+        severity: "blocking",
+        message: `Field ${operation.fieldId} uses unsupported type ${field.type}.`,
+        entryId: operation.entryId,
+        fieldId: operation.fieldId,
+        locale: operation.locale,
+      });
+    }
+  }
+
+  return validateApprovedChangesToolOutputSchema.parse({
+    runId: toolInput.runId,
+    canApply: operations.length > 0 && blockingIssues.length === 0,
+    operations,
+    blockingIssues,
+    warnings,
+  });
 }
 
 export async function invokeAppAction<TInput, TResult>(

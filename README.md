@@ -2,7 +2,7 @@
 
 Experimental monorepo for a Contentful rename assistant.
 
-The current implementation helps an editor describe a product rename, search Contentful for likely references, draft field-level edits, review them in the app, and apply approved changes with the current user's Contentful permissions.
+The current implementation helps an editor inspect Contentful safely, describe a product rename, search Contentful for likely references, draft field-level edits, review them in the app, validate approved changes, and apply approved updates with the current user's Contentful permissions.
 
 Repository naming is slightly ahead of the codebase naming: the GitHub repo is `content-agent-app-experimental`, while package names and much of the UI still use `contentful-rename` and `Product Rename Agent`.
 
@@ -54,8 +54,20 @@ That split keeps Contentful access user-scoped instead of giving the backend dir
 5. The agent drafts proposed changes from those snapshots.
 6. The agent suspends `reviewProposalsClient`.
 7. The editor approves, rejects, or edits proposed replacements in the app.
-8. If approved changes exist, the agent suspends `applyApprovedChangesClient`.
-9. The frontend applies those writes back to Contentful.
+8. If pre-apply validation is enabled and approved changes exist, the agent suspends `validateApprovedChangesClient`.
+9. The frontend checks current entry versions, locales, field definitions, and supported patch targets.
+10. If the approved changes are still valid, the agent suspends `applyApprovedChangesClient`.
+11. The frontend applies those writes back to Contentful.
+
+## Read-only inspection flow
+
+The agent also supports a broader read-only inspection path without changing content:
+
+1. `getLocalesClient` for locale availability and fallbacks
+2. `listContentTypesClient` for content type and field discovery
+3. `extractSearchFilters` to convert a free-form request into structured entry filters
+4. `searchEntriesClient` to run a structured entry search inside the current user's Contentful session
+5. `readEntriesClient` to fetch field-level values only when the agent needs them
 
 ### Review and safety behavior
 
@@ -184,6 +196,8 @@ The app configuration screen stores these installation parameters:
 | `maxCandidatesPerRun` | `30` | Candidate cap, validated to `1-100` |
 | `defaultDryRun` | `true` | Stored in config UI; not currently enforced by the runtime flow |
 | `toolAvailability.semanticSearch` | `true` | Enables semantic/hybrid search. When disabled, the app forces keyword-only candidate discovery |
+| `toolAvailability.entrySearch` | `true` | Enables structured entry search for read-only inspection flows |
+| `toolAvailability.preApplyValidation` | `true` | Enables the validation step between human review and apply |
 
 The chat UI also exposes richer debugging information during runs:
 

@@ -1,17 +1,20 @@
 import { createTool } from "@mastra/core/tools";
 import {
+  chatExecutionContextSchema,
   createChatDebugError,
-  serializeChatDebugError,
-  type ChatExecutionContext,
   getEntryDetailsToolInputSchema,
   getEntryDetailsToolOutputSchema,
+  getLocalesToolInputSchema,
+  getLocalesToolOutputSchema,
   listContentTypesToolInputSchema,
   listContentTypesToolOutputSchema,
   readEntriesToolInputSchema,
   readEntriesToolOutputSchema,
+  searchEntriesToolInputSchema,
+  searchEntriesToolOutputSchema,
+  serializeChatDebugError,
   updateEntryAndPublishToolInputSchema,
   updateEntryAndPublishToolOutputSchema,
-  chatExecutionContextSchema,
 } from "@contentful-rename/shared";
 import { z } from "zod";
 
@@ -30,26 +33,22 @@ function getChatContext(context: any) {
   return chatExecutionContextSchema.parse(context?.requestContext?.all ?? {});
 }
 
-function requireAgentContext(toolName: string, phase: ChatExecutionContextPhase) {
-  return serializeChatDebugError(
-    createChatDebugError(new Error(`Agent context is required for ${toolName}.`), {
-      code: "agent_context_missing",
-      phase,
-      toolName,
-    }),
+function missingAgentError(message: string, phase: string, toolName: string) {
+  return new Error(
+    serializeChatDebugError(
+      createChatDebugError(new Error(message), {
+        code: "agent_context_missing",
+        phase: phase as any,
+        toolName,
+      }),
+    ),
   );
 }
-
-type ChatExecutionContextPhase =
-  | "listing-content-types"
-  | "loading-entry-details"
-  | "reading-entries"
-  | "publishing-entry-updates";
 
 export const listContentTypesClientTool = createTool({
   id: "list-content-types-client",
   description:
-    "List Contentful content types or look up specific content type ids using the current Contentful app permissions.",
+    "List Contentful content types or inspect specific content type ids using the current app session.",
   inputSchema: listContentTypesToolInputSchema,
   outputSchema: listContentTypesToolOutputSchema,
   suspendSchema: listContentTypesToolInputSchema,
@@ -57,8 +56,10 @@ export const listContentTypesClientTool = createTool({
   requestContextSchema: chatExecutionContextSchema,
   execute: async (inputData, context) => {
     if (!context.agent) {
-      throw new Error(
-        requireAgentContext("listContentTypesClient", "listing-content-types"),
+      throw missingAgentError(
+        "Agent context is required for listing content types.",
+        "listing-content-types",
+        "listContentTypesClient",
       );
     }
 
@@ -74,7 +75,7 @@ export const listContentTypesClientTool = createTool({
 export const getEntryDetailsClientTool = createTool({
   id: "get-entry-details-client",
   description:
-    "Load a Contentful entry with its content type metadata using the current Contentful app permissions.",
+    "Load a specific Contentful entry together with its content type metadata using the current app session.",
   inputSchema: getEntryDetailsRequestSchema,
   outputSchema: getEntryDetailsToolOutputSchema,
   suspendSchema: getEntryDetailsToolInputSchema,
@@ -82,8 +83,10 @@ export const getEntryDetailsClientTool = createTool({
   requestContextSchema: chatExecutionContextSchema,
   execute: async (inputData, context) => {
     if (!context.agent) {
-      throw new Error(
-        requireAgentContext("getEntryDetailsClient", "loading-entry-details"),
+      throw missingAgentError(
+        "Agent context is required for loading entry details.",
+        "loading-entry-details",
+        "getEntryDetailsClient",
       );
     }
 
@@ -107,7 +110,7 @@ export const getEntryDetailsClientTool = createTool({
 export const readEntriesClientTool = createTool({
   id: "read-entries-client",
   description:
-    "Read one or more Contentful entries using the current Contentful app permissions.",
+    "Read one or more Contentful entries using the current app session.",
   inputSchema: readEntriesRequestSchema,
   outputSchema: readEntriesToolOutputSchema,
   suspendSchema: readEntriesToolInputSchema,
@@ -115,8 +118,10 @@ export const readEntriesClientTool = createTool({
   requestContextSchema: chatExecutionContextSchema,
   execute: async (inputData, context) => {
     if (!context.agent) {
-      throw new Error(
-        requireAgentContext("readEntriesClient", "reading-entries"),
+      throw missingAgentError(
+        "Agent context is required for reading entries.",
+        "reading-entries",
+        "readEntriesClient",
       );
     }
 
@@ -139,10 +144,80 @@ export const readEntriesClientTool = createTool({
   },
 });
 
+export const getLocalesClientTool = createTool({
+  id: "get-locales-client",
+  description:
+    "List Contentful locales using the current app session.",
+  inputSchema: getLocalesToolInputSchema,
+  outputSchema: getLocalesToolOutputSchema,
+  suspendSchema: getLocalesToolInputSchema,
+  resumeSchema: getLocalesToolOutputSchema,
+  requestContextSchema: chatExecutionContextSchema,
+  execute: async (inputData, context) => {
+    if (!context.agent) {
+      throw missingAgentError(
+        "Agent context is required for listing locales.",
+        "listing-locales",
+        "getLocalesClient",
+      );
+    }
+
+    if (!context.agent.resumeData) {
+      await context.agent.suspend(getLocalesToolInputSchema.parse(inputData));
+      return undefined as never;
+    }
+
+    return getLocalesToolOutputSchema.parse(context.agent.resumeData);
+  },
+});
+
+export const searchEntriesClientTool = createTool({
+  id: "search-entries-client",
+  description:
+    "Search Contentful entries using structured filters and the current app session. Use this only after filters are already structured.",
+  inputSchema: searchEntriesToolInputSchema,
+  outputSchema: searchEntriesToolOutputSchema,
+  suspendSchema: searchEntriesToolInputSchema,
+  resumeSchema: searchEntriesToolOutputSchema,
+  requestContextSchema: chatExecutionContextSchema,
+  execute: async (inputData, context) => {
+    if (!context.agent) {
+      throw missingAgentError(
+        "Agent context is required for entry search.",
+        "searching-entries",
+        "searchEntriesClient",
+      );
+    }
+
+    if (!context.agent.resumeData) {
+      const chatContext = getChatContext(context);
+      if (!chatContext.toolAvailability.entrySearch) {
+        throw new Error(
+          serializeChatDebugError(
+            createChatDebugError(
+              new Error("Entry search is disabled in the current app configuration."),
+              {
+                code: "entry_search_disabled",
+                phase: "searching-entries",
+                toolName: "searchEntriesClient",
+              },
+            ),
+          ),
+        );
+      }
+
+      await context.agent.suspend(searchEntriesToolInputSchema.parse(inputData));
+      return undefined as never;
+    }
+
+    return searchEntriesToolOutputSchema.parse(context.agent.resumeData);
+  },
+});
+
 export const updateEntryAndPublishClientTool = createTool({
   id: "update-entry-and-publish-client",
   description:
-    "Update a Contentful entry and publish it through the current Contentful app session.",
+    "Update a Contentful entry and publish it through the current app session.",
   inputSchema: updateEntryAndPublishToolInputSchema,
   outputSchema: updateEntryAndPublishToolOutputSchema,
   suspendSchema: updateEntryAndPublishToolInputSchema,
@@ -150,11 +225,10 @@ export const updateEntryAndPublishClientTool = createTool({
   requestContextSchema: chatExecutionContextSchema,
   execute: async (inputData, context) => {
     if (!context.agent) {
-      throw new Error(
-        requireAgentContext(
-          "updateEntryAndPublishClient",
-          "publishing-entry-updates",
-        ),
+      throw missingAgentError(
+        "Agent context is required for publishing entry updates.",
+        "publishing-entry-updates",
+        "updateEntryAndPublishClient",
       );
     }
 

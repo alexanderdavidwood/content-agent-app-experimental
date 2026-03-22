@@ -18,34 +18,12 @@ import {
   type AgentTraceStep,
   type AgentTraceToolCall,
   type AgentTraceToolResult,
-  type ApplyApprovedChangesToolInput,
-  type ApplyApprovedChangesToolOutput,
   type ChatDebugError,
-  type DiscoverCandidatesToolInput,
-  type DiscoverCandidatesToolOutput,
-  type GetEntryDetailsToolInput,
-  type GetEntryDetailsToolOutput,
-  type ListContentTypesToolInput,
-  type ListContentTypesToolOutput,
-  type ReadEntriesToolInput,
-  type ReadEntriesToolOutput,
   type ReviewProposalsToolInput,
-  type SemanticSearchResult,
-  type UpdateEntryAndPublishToolInput,
-  type UpdateEntryAndPublishToolOutput,
 } from "@contentful-rename/shared";
 
-import {
-  applyOperations,
-  buildApplyOperations,
-  fetchEntrySnapshots,
-  getEntryDetailsWithContentType,
-  getInstallationParameters,
-  listContentTypes,
-  performCandidateSearch,
-  readEntries,
-  updateEntryAndPublish,
-} from "../../lib/contentfulClient";
+import { getAutoResumeClientToolDefinition } from "../../lib/clientToolRegistry";
+import { getInstallationParameters } from "../../lib/contentfulClient";
 import {
   approveSafeChanges,
   buildReviewDraft,
@@ -59,12 +37,6 @@ import {
   getReasoningText,
   getToolParts,
   getToolError,
-  parseApplyApprovedChangesOutput,
-  parseDiscoverCandidatesOutput,
-  parseGetEntryDetailsOutput,
-  parseListContentTypesOutput,
-  parseReadEntriesOutput,
-  parseUpdateEntryAndPublishOutput,
   type ReviewDraftMap,
   type ToolPartSummary,
 } from "../../lib/chatRuntime";
@@ -77,7 +49,6 @@ import {
   toolCallSuspendedDataSchema,
   type RenameChatMessage,
 } from "../../lib/chatTypes";
-import { buildSearchQueries } from "../../lib/searchQueries";
 
 type ChatWorkspaceProps = {
   sdk: any;
@@ -99,39 +70,6 @@ type ClientActionError = {
   toolName: string;
   error: ChatDebugError;
 };
-
-function escapeRegex(value: string) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function buildNameVariants(name: string) {
-  const trimmed = name.trim();
-  const variants = new Set<string>([
-    trimmed,
-    `${trimmed}s`,
-    `${trimmed}'s`,
-    `${trimmed}’s`,
-    trimmed.replace(/\s+/g, "-"),
-    trimmed.replace(/-/g, " "),
-  ]);
-  return [...variants].filter(Boolean);
-}
-
-function candidateContainsVariant(candidate: any, variants: string[]) {
-  return candidate.fields.some((field: any) => {
-    const values: string[] = [];
-    if (typeof field.rawValue === "string") {
-      values.push(field.rawValue);
-    }
-    for (const segment of field.segments) {
-      values.push(segment.text);
-    }
-
-    return values.some((value) =>
-      variants.some((variant) => new RegExp(escapeRegex(variant), "i").test(value)),
-    );
-  });
-}
 
 function buildChatSessionKey(surfaceContext: AgentSurfaceContext) {
   const scope =
@@ -169,43 +107,15 @@ function loadChatMemory(storageKey: string) {
 }
 
 function clientActionLabel(toolName: string | null) {
-  switch (toolName) {
-    case "listContentTypesClient":
-      return "Loading content types";
-    case "getEntryDetailsClient":
-      return "Loading entry details";
-    case "readEntriesClient":
-      return "Reading entries";
-    case "updateEntryAndPublishClient":
-      return "Publishing entry updates";
-    case "discoverCandidatesClient":
-      return "Searching Contentful";
-    case "applyApprovedChangesClient":
-      return "Applying approved changes";
-    default:
-      return "Waiting";
-  }
+  return getAutoResumeClientToolDefinition(toolName)?.pendingTitle ?? "Waiting";
 }
 
 function phaseForToolName(toolName: string | null) {
-  switch (toolName) {
-    case "listContentTypesClient":
-      return "listing-content-types" as const;
-    case "getEntryDetailsClient":
-      return "loading-entry-details" as const;
-    case "readEntriesClient":
-      return "reading-entries" as const;
-    case "updateEntryAndPublishClient":
-      return "publishing-entry-updates" as const;
-    case "discoverCandidatesClient":
-      return "searching-contentful" as const;
-    case "reviewProposalsClient":
-      return "reviewing-proposed-changes" as const;
-    case "applyApprovedChangesClient":
-      return "applying-approved-changes" as const;
-    default:
-      return "error" as const;
+  if (toolName === "reviewProposalsClient") {
+    return "reviewing-proposed-changes" as const;
   }
+
+  return getAutoResumeClientToolDefinition(toolName)?.phase ?? "error";
 }
 
 function stringifyForDisplay(value: unknown) {
@@ -994,80 +904,14 @@ function ToolStatusCard({
     return <DebugErrorCard title="Step failed" error={toolError} />;
   }
 
+  const pendingDefinition = getAutoResumeClientToolDefinition(suspendedTool?.toolName ?? null);
   if (
-    suspendedTool?.toolName === "listContentTypesClient" &&
-    suspendedTool.toolCallId === activeSuspensionToolCallId
+    pendingDefinition &&
+    suspendedTool?.toolCallId === activeSuspensionToolCallId
   ) {
     return (
-      <AIChatArtifactMessage title="Loading content types">
-        <p style={{ margin: 0 }}>
-          Fetching the requested content types from Contentful.
-        </p>
-      </AIChatArtifactMessage>
-    );
-  }
-
-  if (
-    suspendedTool?.toolName === "getEntryDetailsClient" &&
-    suspendedTool.toolCallId === activeSuspensionToolCallId
-  ) {
-    return (
-      <AIChatArtifactMessage title="Loading entry details">
-        <p style={{ margin: 0 }}>
-          Reading the entry and its content type metadata.
-        </p>
-      </AIChatArtifactMessage>
-    );
-  }
-
-  if (
-    suspendedTool?.toolName === "readEntriesClient" &&
-    suspendedTool.toolCallId === activeSuspensionToolCallId
-  ) {
-    return (
-      <AIChatArtifactMessage title="Reading entries">
-        <p style={{ margin: 0 }}>
-          Loading localized entry fields from Contentful.
-        </p>
-      </AIChatArtifactMessage>
-    );
-  }
-
-  if (
-    suspendedTool?.toolName === "updateEntryAndPublishClient" &&
-    suspendedTool.toolCallId === activeSuspensionToolCallId
-  ) {
-    return (
-      <AIChatArtifactMessage title="Publishing entry updates">
-        <p style={{ margin: 0 }}>
-          Updating the entry and publishing the new version.
-        </p>
-      </AIChatArtifactMessage>
-    );
-  }
-
-  if (
-    suspendedTool?.toolName === "discoverCandidatesClient" &&
-    suspendedTool.toolCallId === activeSuspensionToolCallId
-  ) {
-    return (
-      <AIChatArtifactMessage title="Searching Contentful">
-        <p style={{ margin: 0 }}>
-          Looking up candidate entries and preparing a review set.
-        </p>
-      </AIChatArtifactMessage>
-    );
-  }
-
-  if (
-    suspendedTool?.toolName === "applyApprovedChangesClient" &&
-    suspendedTool.toolCallId === activeSuspensionToolCallId
-  ) {
-    return (
-      <AIChatArtifactMessage title="Applying approved changes">
-        <p style={{ margin: 0 }}>
-          Writing approved updates back to Contentful.
-        </p>
+      <AIChatArtifactMessage title={pendingDefinition.pendingTitle}>
+        <p style={{ margin: 0 }}>{pendingDefinition.pendingBody}</p>
       </AIChatArtifactMessage>
     );
   }
@@ -1154,11 +998,18 @@ export default function ChatWorkspace({
 }: ChatWorkspaceProps) {
   const parameters = getInstallationParameters(sdk);
   const defaultLocale = sdk.locales?.default ?? "en-US";
+  const timeZone =
+    typeof Intl !== "undefined"
+      ? Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"
+      : "UTC";
+  const currentDate = new Date().toISOString().slice(0, 10);
   const storageKey = buildChatSessionKey(surfaceContext);
   const [chatMemory, setChatMemory] = useState(() => loadChatMemory(storageKey));
   const contextRef = useRef<RenameChatRequestBody>({
     requestContext: {
       defaultLocale,
+      timeZone,
+      currentDate,
       surfaceContext,
       allowedContentTypes: parameters.allowedContentTypes,
       maxDiscoveryQueries: parameters.maxDiscoveryQueries,
@@ -1171,6 +1022,8 @@ export default function ChatWorkspace({
   contextRef.current = {
     requestContext: {
       defaultLocale,
+      timeZone,
+      currentDate,
       surfaceContext,
       allowedContentTypes: parameters.allowedContentTypes,
       maxDiscoveryQueries: parameters.maxDiscoveryQueries,
@@ -1214,178 +1067,6 @@ export default function ChatWorkspace({
   useEffect(() => {
     setChatMemory(loadChatMemory(storageKey));
   }, [storageKey]);
-
-  async function loadContentTypes(
-    toolInput: ListContentTypesToolInput,
-  ): Promise<ListContentTypesToolOutput> {
-    try {
-      return await listContentTypes(sdk, toolInput);
-    } catch (error) {
-      throw createChatDebugError(error, {
-        code: "list_content_types_failed",
-        phase: "listing-content-types",
-        toolName: "listContentTypesClient",
-        details: {
-          requestedContentTypeIds: toolInput.contentTypeIds,
-          includeFields: toolInput.includeFields,
-          limit: toolInput.limit,
-        },
-      });
-    }
-  }
-
-  async function loadEntryDetails(
-    toolInput: GetEntryDetailsToolInput,
-  ): Promise<GetEntryDetailsToolOutput> {
-    try {
-      return await getEntryDetailsWithContentType(sdk, toolInput);
-    } catch (error) {
-      throw createChatDebugError(error, {
-        code: "get_entry_details_failed",
-        phase: "loading-entry-details",
-        toolName: "getEntryDetailsClient",
-        details: {
-          entryId: toolInput.entryId,
-          locale: toolInput.locale,
-          includeContentTypeFields: toolInput.includeContentTypeFields,
-        },
-      });
-    }
-  }
-
-  async function loadEntries(
-    toolInput: ReadEntriesToolInput,
-  ): Promise<ReadEntriesToolOutput> {
-    try {
-      return await readEntries(sdk, toolInput);
-    } catch (error) {
-      throw createChatDebugError(error, {
-        code: "read_entries_failed",
-        phase: "reading-entries",
-        toolName: "readEntriesClient",
-        details: {
-          entryIds: toolInput.entryIds,
-          locales: toolInput.locales,
-        },
-      });
-    }
-  }
-
-  async function publishEntryUpdates(
-    toolInput: UpdateEntryAndPublishToolInput,
-  ): Promise<UpdateEntryAndPublishToolOutput> {
-    try {
-      return await updateEntryAndPublish(sdk, toolInput);
-    } catch (error) {
-      throw createChatDebugError(error, {
-        code: "update_entry_publish_failed",
-        phase: "publishing-entry-updates",
-        toolName: "updateEntryAndPublishClient",
-        details: {
-          entryId: toolInput.entryId,
-          expectedVersion: toolInput.expectedVersion,
-          expectedContentTypeId: toolInput.expectedContentTypeId,
-          updateCount: toolInput.updates.length,
-        },
-      });
-    }
-  }
-
-  async function discoverCandidates(
-    toolInput: DiscoverCandidatesToolInput,
-  ): Promise<DiscoverCandidatesToolOutput> {
-    const renameInput = toolInput.input;
-    const searchQueries = buildSearchQueries({
-      discoveryQueries: toolInput.discoveryPlan.queries,
-      oldProductName: renameInput.oldProductName,
-      maxDiscoveryQueries: parameters.maxDiscoveryQueries,
-    });
-
-    try {
-      const { indexStatus, searchResult }: {
-        indexStatus: DiscoverCandidatesToolOutput["indexStatus"];
-        searchResult: SemanticSearchResult;
-      } = await performCandidateSearch(sdk, {
-        defaultLocale: renameInput.defaultLocale,
-        searchMode: renameInput.searchMode,
-        queries: searchQueries,
-        limitPerQuery: Math.min(toolInput.maxCandidatesPerRun, 10),
-        semanticSearchEnabled: parameters.toolAvailability.semanticSearch,
-      });
-
-      const snapshots = await fetchEntrySnapshots(
-        sdk,
-        searchResult.entryIds.slice(0, toolInput.maxCandidatesPerRun),
-        renameInput.defaultLocale,
-        renameInput.contentTypeIds,
-      );
-      const variants = buildNameVariants(renameInput.oldProductName);
-      const lexicalMatches = snapshots.filter((candidate) =>
-        candidateContainsVariant(candidate, variants),
-      );
-      const candidateSnapshots =
-        lexicalMatches.length > 0
-          ? lexicalMatches
-          : snapshots.slice(0, toolInput.maxCandidatesPerRun);
-
-      return {
-        runId: toolInput.runId,
-        indexStatus,
-        searchResult,
-        candidateSnapshots,
-      };
-    } catch (error) {
-      throw createChatDebugError(error, {
-        code: "discover_candidates_failed",
-        phase: "searching-contentful",
-        toolName: "discoverCandidatesClient",
-        details: {
-          defaultLocale: renameInput.defaultLocale,
-          requestedSearchMode: renameInput.searchMode,
-          semanticSearchEnabled: parameters.toolAvailability.semanticSearch,
-          searchQueries,
-        },
-      });
-    }
-  }
-
-  async function applyApprovedChanges(
-    toolInput: ApplyApprovedChangesToolInput,
-  ): Promise<ApplyApprovedChangesToolOutput> {
-    try {
-      const approvals = Object.fromEntries(
-        toolInput.approvals.map((approval) => [
-          approval.changeId,
-          {
-            approved: approval.approved,
-            editedText: approval.editedText,
-          },
-        ]),
-      );
-      const operations = buildApplyOperations(
-        toolInput.candidateSnapshots,
-        toolInput.proposedChanges,
-        approvals,
-      );
-      const results = await applyOperations(sdk, operations);
-
-      return {
-        runId: toolInput.runId,
-        results,
-      };
-    } catch (error) {
-      throw createChatDebugError(error, {
-        code: "apply_changes_failed",
-        phase: "applying-approved-changes",
-        toolName: "applyApprovedChangesClient",
-        details: {
-          runId: toolInput.runId,
-          approvalCount: toolInput.approvals.length,
-        },
-      });
-    }
-  }
-
   async function resumeSuspendedTool(
     toolName: string,
     toolCallId: string,
@@ -1464,96 +1145,29 @@ export default function ChatWorkspace({
     autoResumingToolCallIdsRef.current.add(activeSuspension.toolCallId);
 
     const run = async () => {
+      const definition = getAutoResumeClientToolDefinition(activeSuspension.toolName);
+      if (!definition?.execute) {
+        autoResumingToolCallIdsRef.current.delete(activeSuspension.toolCallId);
+        return;
+      }
+
       try {
-        if (activeSuspension.toolName === "listContentTypesClient") {
-          const toolOutput = parseListContentTypesOutput(
-            await loadContentTypes(activeSuspension.input),
-          );
-          if (cancelled) {
-            return;
-          }
-          await resumeSuspendedTool(
-            activeSuspension.toolName,
-            activeSuspension.toolCallId,
-            activeSuspension.runId,
-            toolOutput as unknown as Record<string, unknown>,
-          );
+        const toolOutput = definition.parseOutput(
+          await definition.execute(
+            sdk,
+            activeSuspension.input as never,
+            contextRef.current.requestContext,
+          ),
+        );
+        if (cancelled) {
+          return;
         }
-
-        if (activeSuspension.toolName === "getEntryDetailsClient") {
-          const toolOutput = parseGetEntryDetailsOutput(
-            await loadEntryDetails(activeSuspension.input),
-          );
-          if (cancelled) {
-            return;
-          }
-          await resumeSuspendedTool(
-            activeSuspension.toolName,
-            activeSuspension.toolCallId,
-            activeSuspension.runId,
-            toolOutput as unknown as Record<string, unknown>,
-          );
-        }
-
-        if (activeSuspension.toolName === "readEntriesClient") {
-          const toolOutput = parseReadEntriesOutput(
-            await loadEntries(activeSuspension.input),
-          );
-          if (cancelled) {
-            return;
-          }
-          await resumeSuspendedTool(
-            activeSuspension.toolName,
-            activeSuspension.toolCallId,
-            activeSuspension.runId,
-            toolOutput as unknown as Record<string, unknown>,
-          );
-        }
-
-        if (activeSuspension.toolName === "updateEntryAndPublishClient") {
-          const toolOutput = parseUpdateEntryAndPublishOutput(
-            await publishEntryUpdates(activeSuspension.input),
-          );
-          if (cancelled) {
-            return;
-          }
-          await resumeSuspendedTool(
-            activeSuspension.toolName,
-            activeSuspension.toolCallId,
-            activeSuspension.runId,
-            toolOutput as unknown as Record<string, unknown>,
-          );
-        }
-
-        if (activeSuspension.toolName === "discoverCandidatesClient") {
-          const toolOutput = parseDiscoverCandidatesOutput(
-            await discoverCandidates(activeSuspension.input),
-          );
-          if (cancelled) {
-            return;
-          }
-          await resumeSuspendedTool(
-            activeSuspension.toolName,
-            activeSuspension.toolCallId,
-            activeSuspension.runId,
-            toolOutput as unknown as Record<string, unknown>,
-          );
-        }
-
-        if (activeSuspension.toolName === "applyApprovedChangesClient") {
-          const toolOutput = parseApplyApprovedChangesOutput(
-            await applyApprovedChanges(activeSuspension.input),
-          );
-          if (cancelled) {
-            return;
-          }
-          await resumeSuspendedTool(
-            activeSuspension.toolName,
-            activeSuspension.toolCallId,
-            activeSuspension.runId,
-            toolOutput as unknown as Record<string, unknown>,
-          );
-        }
+        await resumeSuspendedTool(
+          activeSuspension.toolName,
+          activeSuspension.toolCallId,
+          activeSuspension.runId,
+          toolOutput as unknown as Record<string, unknown>,
+        );
       } catch (toolError) {
         if (cancelled) {
           return;
@@ -1651,6 +1265,14 @@ export default function ChatWorkspace({
         <p style={{ margin: 0 }}>
           Semantic search:{" "}
           {parameters.toolAvailability.semanticSearch ? "enabled" : "disabled"}
+        </p>
+        <p style={{ margin: 0 }}>
+          Entry search:{" "}
+          {parameters.toolAvailability.entrySearch ? "enabled" : "disabled"}
+        </p>
+        <p style={{ margin: 0 }}>
+          Pre-apply validation:{" "}
+          {parameters.toolAvailability.preApplyValidation ? "enabled" : "disabled"}
         </p>
         <p style={{ margin: 0, wordBreak: "break-all" }}>
           Backend: {parameters.mastraBaseUrl}

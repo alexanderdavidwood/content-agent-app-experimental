@@ -16,6 +16,8 @@ import {
   draftProposalsToolOutputSchema,
   renameChatRequestSchema,
   renameRunInputSchema,
+  validateApprovedChangesToolInputSchema,
+  validateApprovedChangesToolOutputSchema,
   reviewProposalsToolInputSchema,
   reviewProposalsToolOutputSchema,
 } from "@contentful-rename/shared";
@@ -173,5 +175,59 @@ export const applyApprovedChangesClientTool = createTool({
     }
 
     return applyApprovedChangesToolOutputSchema.parse(context.agent.resumeData);
+  },
+});
+
+export const validateApprovedChangesClientTool = createTool({
+  id: "validate-approved-changes-client",
+  description:
+    "Validate approved rename changes against the latest Contentful state before applying them. Use this after review and before apply when pre-apply validation is enabled.",
+  inputSchema: validateApprovedChangesToolInputSchema,
+  outputSchema: validateApprovedChangesToolOutputSchema,
+  suspendSchema: validateApprovedChangesToolInputSchema,
+  resumeSchema: validateApprovedChangesToolOutputSchema,
+  requestContextSchema: chatExecutionContextSchema,
+  execute: async (inputData, context) => {
+    if (!context.agent) {
+      throw new Error(
+        serializeChatDebugError(
+          createChatDebugError(
+            new Error("Agent context is required for validation."),
+            {
+              code: "agent_context_missing",
+              phase: "validating-approved-changes",
+              toolName: "validateApprovedChangesClient",
+            },
+          ),
+        ),
+      );
+    }
+
+    if (!context.agent.resumeData) {
+      const chatContext = getChatContext(context);
+      if (!chatContext.toolAvailability.preApplyValidation) {
+        throw new Error(
+          serializeChatDebugError(
+            createChatDebugError(
+              new Error(
+                "Pre-apply validation is disabled in the current app configuration.",
+              ),
+              {
+                code: "pre_apply_validation_disabled",
+                phase: "validating-approved-changes",
+                toolName: "validateApprovedChangesClient",
+              },
+            ),
+          ),
+        );
+      }
+
+      await context.agent.suspend(
+        validateApprovedChangesToolInputSchema.parse(inputData),
+      );
+      return undefined as never;
+    }
+
+    return validateApprovedChangesToolOutputSchema.parse(context.agent.resumeData);
   },
 });
