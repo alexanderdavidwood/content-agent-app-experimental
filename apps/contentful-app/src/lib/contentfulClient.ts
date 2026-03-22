@@ -6,15 +6,30 @@ import type {
   ApplyResult,
   CandidateEntrySnapshot,
   CandidateFieldSnapshot,
+  ContentEntryRecord,
+  ContentTypeFieldSummary,
+  ContentTypeSummary,
+  GetEntryDetailsToolInput,
+  GetEntryDetailsToolOutput,
+  ListContentTypesToolInput,
+  ListContentTypesToolOutput,
   ProposedChange,
+  ReadEntriesToolInput,
+  ReadEntriesToolOutput,
   RenameRunInput,
   RichTextNode,
   SemanticEnsureIndexResult,
   SemanticSearchResult,
+  UpdateEntryAndPublishToolInput,
+  UpdateEntryAndPublishToolOutput,
 } from "@contentful-rename/shared";
 import {
   appInstallationParametersSchema,
   extractRichTextSegments,
+  getEntryDetailsToolOutputSchema,
+  listContentTypesToolOutputSchema,
+  readEntriesToolOutputSchema,
+  updateEntryAndPublishToolOutputSchema,
 } from "@contentful-rename/shared";
 
 import { applyProposedRichTextChange, groupOperationsByEntry } from "./richTextPatch";
@@ -24,7 +39,10 @@ type EntryLike = {
   sys: {
     id: string;
     version: number;
+    createdAt?: string;
     updatedAt: string;
+    publishedAt?: string;
+    publishedVersion?: number;
     contentType: {
       sys: {
         id: string;
@@ -35,9 +53,25 @@ type EntryLike = {
 };
 
 type ContentTypeLike = {
+  sys?: {
+    id?: string;
+  };
+  name?: string;
+  description?: string;
+  displayField?: string;
   fields: Array<{
     id: string;
+    name?: string;
     type: string;
+    required?: boolean;
+    localized?: boolean;
+    disabled?: boolean;
+    omitted?: boolean;
+    linkType?: string;
+    items?: {
+      type?: string;
+      linkType?: string;
+    };
   }>;
 };
 
@@ -59,6 +93,21 @@ type KeywordSearchClientOverride = {
     getMany(args: { query: string; limit: number }): Promise<{
       items?: Array<{ sys?: { id?: string } }>;
     }>;
+  };
+};
+
+type CmaClientLike = {
+  contentType: {
+    get(args: { contentTypeId: string }): Promise<ContentTypeLike>;
+    getMany?(args: { limit: number }): Promise<{ items?: ContentTypeLike[] }>;
+  };
+  entry: {
+    get(args: { entryId: string }): Promise<EntryLike>;
+    update(
+      args: { entryId: string },
+      payload: { fields: Record<string, Record<string, unknown>>; sys: { version: number } },
+    ): Promise<EntryLike>;
+    publish(args: { entryId: string }, payload: EntryLike): Promise<EntryLike>;
   };
 };
 
@@ -147,6 +196,354 @@ export function createCmaClient(sdk: SdkLike) {
       },
     },
   );
+}
+
+function isNotFoundError(error: unknown) {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+
+  const status = (error as { status?: number }).status;
+  if (status === 404) {
+    return true;
+  }
+
+  const name = String((error as { name?: unknown }).name ?? "");
+  const message = String((error as { message?: unknown }).message ?? "");
+
+  return /not.?found/i.test(name) || /not.?found/i.test(message);
+}
+
+function isVersionMismatchError(error: unknown) {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+
+  const status = (error as { status?: number }).status;
+  const message = String((error as { message?: unknown }).message ?? "");
+
+  return status === 409 || message.includes("VersionMismatch");
+}
+
+function uniqueStrings(values: string[]) {
+  return Array.from(
+    new Set(values.map((value) => value.trim()).filter(Boolean)),
+  );
+}
+
+function buildContentTypeFieldSummary(field: ContentTypeLike["fields"][number]): ContentTypeFieldSummary {
+  return {
+    fieldId: field.id,
+    name: field.name ?? field.id,
+    type: field.type,
+    required: field.required ?? false,
+    localized: field.localized ?? false,
+    disabled: field.disabled ?? false,
+    omitted: field.omitted ?? false,
+    linkType: field.linkType,
+    itemsType: field.items?.type,
+    itemsLinkType: field.items?.linkType,
+  };
+}
+
+function toContentTypeSummary(
+  contentType: ContentTypeLike,
+  includeFields: boolean,
+): ContentTypeSummary {
+  return {
+    contentTypeId: contentType.sys?.id ?? "",
+    name: contentType.name ?? contentType.sys?.id ?? "Unknown content type",
+    description: contentType.description || undefined,
+    displayField: contentType.displayField || undefined,
+    fieldCount: contentType.fields.length,
+    fields: includeFields
+      ? contentType.fields.map((field) => buildContentTypeFieldSummary(field))
+      : undefined,
+  };
+}
+
+function filterEntryFields(
+  fields: Record<string, Record<string, unknown>>,
+  locales: string[],
+) {
+  if (locales.length === 0) {
+    return fields;
+  }
+
+  return Object.fromEntries(
+    Object.entries(fields).flatMap(([fieldId, localizedValues]) => {
+      const nextValues = Object.fromEntries(
+        Object.entries(localizedValues).filter(([locale]) => locales.includes(locale)),
+      );
+
+      return Object.keys(nextValues).length > 0 ? [[fieldId, nextValues]] : [];
+    }),
+  );
+}
+
+function toContentEntryRecord(
+  entry: EntryLike,
+  locales: string[],
+): ContentEntryRecord {
+  return {
+    entryId: entry.sys.id,
+    contentTypeId: entry.sys.contentType.sys.id,
+    version: entry.sys.version,
+    createdAt: entry.sys.createdAt,
+    updatedAt: entry.sys.updatedAt,
+    publishedAt: entry.sys.publishedAt,
+    publishedVersion: entry.sys.publishedVersion,
+    fields: filterEntryFields(entry.fields ?? {}, locales),
+  };
+}
+
+function ensureRequestedFieldsExist(
+  updates: UpdateEntryAndPublishToolInput["updates"],
+  contentType: ContentTypeLike,
+) {
+  const knownFieldIds = new Set(contentType.fields.map((field) => field.id));
+  const seenTargets = new Set<string>();
+
+  for (const update of updates) {
+    if (!knownFieldIds.has(update.fieldId)) {
+      throw new Error(
+        `Field "${update.fieldId}" does not exist on content type "${contentType.sys?.id ?? "unknown"}".`,
+      );
+    }
+
+    const targetKey = `${update.fieldId}:${update.locale}`;
+    if (seenTargets.has(targetKey)) {
+      throw new Error(
+        `Duplicate update target "${update.fieldId}" for locale "${update.locale}".`,
+      );
+    }
+
+    seenTargets.add(targetKey);
+  }
+}
+
+function buildUpdatedFields(
+  entry: EntryLike,
+  updates: UpdateEntryAndPublishToolInput["updates"],
+) {
+  const nextFields = structuredClone(entry.fields ?? {});
+
+  for (const update of updates) {
+    nextFields[update.fieldId] = nextFields[update.fieldId] ?? {};
+    nextFields[update.fieldId][update.locale] = update.value;
+  }
+
+  return nextFields;
+}
+
+export async function listContentTypes(
+  sdk: SdkLike,
+  input: ListContentTypesToolInput,
+  cmaOverride?: CmaClientLike,
+): Promise<ListContentTypesToolOutput> {
+  const cma = cmaOverride ?? (createCmaClient(sdk) as unknown as CmaClientLike);
+  const requestedContentTypeIds = uniqueStrings(input.contentTypeIds);
+
+  if (requestedContentTypeIds.length === 0) {
+    const response = await cma.contentType.getMany?.({ limit: input.limit });
+    const contentTypes = (response?.items ?? []).map((contentType) =>
+      toContentTypeSummary(contentType, input.includeFields),
+    );
+
+    return listContentTypesToolOutputSchema.parse({
+      requestedContentTypeIds,
+      contentTypes,
+      missingContentTypeIds: [],
+    });
+  }
+
+  const contentTypes: ContentTypeSummary[] = [];
+  const missingContentTypeIds: string[] = [];
+
+  for (const contentTypeId of requestedContentTypeIds) {
+    try {
+      const contentType = await cma.contentType.get({ contentTypeId });
+      contentTypes.push(toContentTypeSummary(contentType, input.includeFields));
+    } catch (error) {
+      if (isNotFoundError(error)) {
+        missingContentTypeIds.push(contentTypeId);
+        continue;
+      }
+
+      throw error;
+    }
+  }
+
+  return listContentTypesToolOutputSchema.parse({
+    requestedContentTypeIds,
+    contentTypes,
+    missingContentTypeIds,
+  });
+}
+
+export async function getEntryDetailsWithContentType(
+  sdk: SdkLike,
+  input: GetEntryDetailsToolInput,
+  cmaOverride?: CmaClientLike,
+): Promise<GetEntryDetailsToolOutput> {
+  const cma = cmaOverride ?? (createCmaClient(sdk) as unknown as CmaClientLike);
+  const entry = await cma.entry.get({ entryId: input.entryId });
+  const contentType = await cma.contentType.get({
+    contentTypeId: entry.sys.contentType.sys.id,
+  });
+
+  return getEntryDetailsToolOutputSchema.parse({
+    entry: toContentEntryRecord(entry, [input.locale]),
+    contentType: toContentTypeSummary(contentType, input.includeContentTypeFields),
+    locale: input.locale,
+  });
+}
+
+export async function readEntries(
+  sdk: SdkLike,
+  input: ReadEntriesToolInput,
+  cmaOverride?: CmaClientLike,
+): Promise<ReadEntriesToolOutput> {
+  const cma = cmaOverride ?? (createCmaClient(sdk) as unknown as CmaClientLike);
+  const requestedEntryIds = uniqueStrings(input.entryIds);
+  const locales = uniqueStrings(input.locales);
+  const entries: ContentEntryRecord[] = [];
+  const missingEntryIds: string[] = [];
+
+  for (const entryId of requestedEntryIds) {
+    try {
+      const entry = await cma.entry.get({ entryId });
+      entries.push(toContentEntryRecord(entry, locales));
+    } catch (error) {
+      if (isNotFoundError(error)) {
+        missingEntryIds.push(entryId);
+        continue;
+      }
+
+      throw error;
+    }
+  }
+
+  return readEntriesToolOutputSchema.parse({
+    requestedEntryIds,
+    locales,
+    entries,
+    missingEntryIds,
+  });
+}
+
+export async function updateEntryAndPublish(
+  sdk: SdkLike,
+  input: UpdateEntryAndPublishToolInput,
+  cmaOverride?: CmaClientLike,
+): Promise<UpdateEntryAndPublishToolOutput> {
+  const cma = cmaOverride ?? (createCmaClient(sdk) as unknown as CmaClientLike);
+
+  let entry = await cma.entry.get({ entryId: input.entryId });
+  const contentTypeId = entry.sys.contentType.sys.id;
+
+  if (
+    input.expectedContentTypeId &&
+    input.expectedContentTypeId !== contentTypeId
+  ) {
+    return updateEntryAndPublishToolOutputSchema.parse({
+      entryId: input.entryId,
+      contentTypeId,
+      status: "CONFLICT",
+      version: entry.sys.version,
+      updatedAt: entry.sys.updatedAt,
+      message: `Expected content type "${input.expectedContentTypeId}" but found "${contentTypeId}".`,
+    });
+  }
+
+  if (
+    input.expectedVersion !== undefined &&
+    input.expectedVersion !== entry.sys.version
+  ) {
+    return updateEntryAndPublishToolOutputSchema.parse({
+      entryId: input.entryId,
+      contentTypeId,
+      status: "CONFLICT",
+      version: entry.sys.version,
+      updatedAt: entry.sys.updatedAt,
+      message: `Expected entry version ${input.expectedVersion} but found ${entry.sys.version}.`,
+    });
+  }
+
+  const contentType = await cma.contentType.get({ contentTypeId });
+  ensureRequestedFieldsExist(input.updates, contentType);
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const updatedEntry = await cma.entry.update(
+        { entryId: input.entryId },
+        {
+          fields: buildUpdatedFields(entry, input.updates),
+          sys: {
+            version: entry.sys.version,
+          },
+        },
+      );
+
+      try {
+        const publishedEntry = await cma.entry.publish(
+          { entryId: input.entryId },
+          updatedEntry,
+        );
+
+        return updateEntryAndPublishToolOutputSchema.parse({
+          entryId: input.entryId,
+          contentTypeId,
+          status: "PUBLISHED",
+          version: publishedEntry.sys.version,
+          publishedVersion: publishedEntry.sys.publishedVersion,
+          updatedAt: publishedEntry.sys.updatedAt,
+          publishedAt: publishedEntry.sys.publishedAt,
+        });
+      } catch (publishError) {
+        return updateEntryAndPublishToolOutputSchema.parse({
+          entryId: input.entryId,
+          contentTypeId,
+          status: "UPDATED_NOT_PUBLISHED",
+          version: updatedEntry.sys.version,
+          publishedVersion: updatedEntry.sys.publishedVersion,
+          updatedAt: updatedEntry.sys.updatedAt,
+          publishedAt: updatedEntry.sys.publishedAt,
+          message:
+            publishError instanceof Error
+              ? publishError.message
+              : String(publishError),
+        });
+      }
+    } catch (error) {
+      if (
+        attempt === 0 &&
+        input.expectedVersion === undefined &&
+        isVersionMismatchError(error)
+      ) {
+        entry = await cma.entry.get({ entryId: input.entryId });
+        continue;
+      }
+
+      return updateEntryAndPublishToolOutputSchema.parse({
+        entryId: input.entryId,
+        contentTypeId,
+        status: isVersionMismatchError(error) ? "CONFLICT" : "FAILED",
+        version: entry.sys.version,
+        updatedAt: entry.sys.updatedAt,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  return updateEntryAndPublishToolOutputSchema.parse({
+    entryId: input.entryId,
+    contentTypeId,
+    status: "FAILED",
+    version: entry.sys.version,
+    updatedAt: entry.sys.updatedAt,
+    message: "Failed to update and publish the entry.",
+  });
 }
 
 export async function fetchEntrySnapshots(
@@ -244,7 +641,7 @@ export function buildDefaultRenameInput(
     oldProductName: "",
     newProductName: "",
     defaultLocale: locale,
-    searchMode: "semantic",
+    searchMode: "hybrid",
     contentTypeIds: [],
     surfaceContext,
   };

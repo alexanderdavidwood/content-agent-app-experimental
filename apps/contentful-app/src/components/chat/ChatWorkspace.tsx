@@ -23,16 +23,28 @@ import {
   type ChatDebugError,
   type DiscoverCandidatesToolInput,
   type DiscoverCandidatesToolOutput,
+  type GetEntryDetailsToolInput,
+  type GetEntryDetailsToolOutput,
+  type ListContentTypesToolInput,
+  type ListContentTypesToolOutput,
+  type ReadEntriesToolInput,
+  type ReadEntriesToolOutput,
   type ReviewProposalsToolInput,
   type SemanticSearchResult,
+  type UpdateEntryAndPublishToolInput,
+  type UpdateEntryAndPublishToolOutput,
 } from "@contentful-rename/shared";
 
 import {
   applyOperations,
   buildApplyOperations,
   fetchEntrySnapshots,
+  getEntryDetailsWithContentType,
   getInstallationParameters,
+  listContentTypes,
   performCandidateSearch,
+  readEntries,
+  updateEntryAndPublish,
 } from "../../lib/contentfulClient";
 import {
   approveSafeChanges,
@@ -49,10 +61,15 @@ import {
   getToolError,
   parseApplyApprovedChangesOutput,
   parseDiscoverCandidatesOutput,
+  parseGetEntryDetailsOutput,
+  parseListContentTypesOutput,
+  parseReadEntriesOutput,
+  parseUpdateEntryAndPublishOutput,
   type ReviewDraftMap,
   type ToolPartSummary,
 } from "../../lib/chatRuntime";
 import { createRenameChatTransport } from "../../lib/chatTransport";
+import { prioritizeCandidateSnapshots } from "../../lib/candidateSelection";
 import {
   LEGACY_TOOL_CALL_SUSPENDED_PART_TYPE,
   TOOL_CALL_SUSPENDED_PART_TYPE,
@@ -83,39 +100,6 @@ type ClientActionError = {
   toolName: string;
   error: ChatDebugError;
 };
-
-function escapeRegex(value: string) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function buildNameVariants(name: string) {
-  const trimmed = name.trim();
-  const variants = new Set<string>([
-    trimmed,
-    `${trimmed}s`,
-    `${trimmed}'s`,
-    `${trimmed}’s`,
-    trimmed.replace(/\s+/g, "-"),
-    trimmed.replace(/-/g, " "),
-  ]);
-  return [...variants].filter(Boolean);
-}
-
-function candidateContainsVariant(candidate: any, variants: string[]) {
-  return candidate.fields.some((field: any) => {
-    const values: string[] = [];
-    if (typeof field.rawValue === "string") {
-      values.push(field.rawValue);
-    }
-    for (const segment of field.segments) {
-      values.push(segment.text);
-    }
-
-    return values.some((value) =>
-      variants.some((variant) => new RegExp(escapeRegex(variant), "i").test(value)),
-    );
-  });
-}
 
 function buildChatSessionKey(surfaceContext: AgentSurfaceContext) {
   const scope =
@@ -154,6 +138,14 @@ function loadChatMemory(storageKey: string) {
 
 function clientActionLabel(toolName: string | null) {
   switch (toolName) {
+    case "listContentTypesClient":
+      return "Loading content types";
+    case "getEntryDetailsClient":
+      return "Loading entry details";
+    case "readEntriesClient":
+      return "Reading entries";
+    case "updateEntryAndPublishClient":
+      return "Publishing entry updates";
     case "discoverCandidatesClient":
       return "Searching Contentful";
     case "applyApprovedChangesClient":
@@ -165,6 +157,14 @@ function clientActionLabel(toolName: string | null) {
 
 function phaseForToolName(toolName: string | null) {
   switch (toolName) {
+    case "listContentTypesClient":
+      return "listing-content-types" as const;
+    case "getEntryDetailsClient":
+      return "loading-entry-details" as const;
+    case "readEntriesClient":
+      return "reading-entries" as const;
+    case "updateEntryAndPublishClient":
+      return "publishing-entry-updates" as const;
     case "discoverCandidatesClient":
       return "searching-contentful" as const;
     case "reviewProposalsClient":
@@ -251,6 +251,161 @@ function StatusBadge({ label, state }: { label: string; state: string }) {
     >
       {label}
     </span>
+  );
+}
+
+function buildDebugErrorLog(error: ChatDebugError) {
+  const lines = [`message: ${error.message}`];
+
+  if (error.code) {
+    lines.push(`code: ${error.code}`);
+  }
+  if (error.phase) {
+    lines.push(`phase: ${error.phase}`);
+  }
+  if (error.toolName) {
+    lines.push(`tool: ${error.toolName}`);
+  }
+  if (error.details.length > 0) {
+    lines.push("details:");
+    lines.push(...error.details.map((detail) => `- ${detail}`));
+  }
+  if (error.stack) {
+    lines.push("stack:");
+    lines.push(error.stack);
+  }
+
+  return lines.join("\n");
+}
+
+function buildToolPartLog(toolPart: ToolPartSummary) {
+  const lines = [
+    `tool: ${toolPart.type.slice(5)}`,
+    `toolCallId: ${toolPart.toolCallId}`,
+    `state: ${toolPart.state}`,
+  ];
+  const input = stringifyForDisplay(toolPart.input);
+  const output = stringifyForDisplay(toolPart.output);
+  const parsedError = normalizeDebugError(toolPart.errorText, {
+    toolName: toolPart.type.slice(5),
+  });
+
+  if (input) {
+    lines.push("input:");
+    lines.push(input);
+  }
+  if (output) {
+    lines.push("output:");
+    lines.push(output);
+  }
+  if (parsedError) {
+    lines.push("error:");
+    lines.push(buildDebugErrorLog(parsedError));
+  }
+
+  return lines.join("\n");
+}
+
+function buildAgentTraceLog(trace: AgentTraceData) {
+  const lines = [];
+
+  if (trace.status) {
+    lines.push(`status: ${trace.status}`);
+  }
+  if (trace.response?.modelId) {
+    lines.push(`model: ${trace.response.modelId}`);
+  }
+  if (trace.finishReason) {
+    lines.push(`finishReason: ${trace.finishReason}`);
+  }
+
+  trace.steps.forEach((step, index) => {
+    lines.push(`step ${index + 1}:`);
+
+    if (step.stepType) {
+      lines.push(`  stepType: ${step.stepType}`);
+    }
+    if (step.reasoningText) {
+      lines.push("  reasoning:");
+      lines.push(
+        ...step.reasoningText.split("\n").map((line) => `    ${line}`),
+      );
+    }
+    if (step.warnings.length > 0) {
+      lines.push("  warnings:");
+      lines.push(
+        ...step.warnings.map((warning) => `    - ${stringifyForDisplay(warning)}`),
+      );
+    }
+
+    traceStepCalls(step).forEach((call) => {
+      lines.push(`  call: ${extractTraceToolName(call)}`);
+      lines.push(`    toolCallId: ${extractTraceToolCallId(call)}`);
+      const input = stringifyForDisplay(extractTraceToolInput(call));
+      if (input) {
+        lines.push("    input:");
+        lines.push(...input.split("\n").map((line) => `      ${line}`));
+      }
+    });
+
+    traceStepResults(step).forEach((result) => {
+      lines.push(`  result: ${extractTraceToolName(result)}`);
+      lines.push(`    toolCallId: ${extractTraceToolCallId(result)}`);
+      const errorText = extractTraceToolError(result);
+      if (errorText) {
+        lines.push("    error:");
+        lines.push(...errorText.split("\n").map((line) => `      ${line}`));
+      } else {
+        const output = stringifyForDisplay(extractTraceToolOutput(result));
+        if (output) {
+          lines.push("    output:");
+          lines.push(...output.split("\n").map((line) => `      ${line}`));
+        }
+      }
+    });
+  });
+
+  if (trace.steps.length === 0 && trace.reasoning.length > 0) {
+    lines.push("reasoning:");
+    lines.push(trace.reasoning.join(""));
+  }
+
+  return lines.join("\n");
+}
+
+function CopyButton({
+  text,
+  label,
+}: {
+  text: string;
+  label: string;
+}) {
+  const [status, setStatus] = useState<"idle" | "copied" | "failed">("idle");
+
+  return (
+    <button
+      type="button"
+      onClick={async () => {
+        try {
+          if (!navigator?.clipboard?.writeText) {
+            throw new Error("Clipboard API unavailable");
+          }
+
+          await navigator.clipboard.writeText(text);
+          setStatus("copied");
+          window.setTimeout(() => setStatus("idle"), 1500);
+        } catch {
+          setStatus("failed");
+          window.setTimeout(() => setStatus("idle"), 1500);
+        }
+      }}
+    >
+      {status === "idle"
+        ? label
+        : status === "copied"
+          ? "Copied"
+          : "Copy failed"}
+    </button>
   );
 }
 
@@ -508,6 +663,8 @@ function DebugErrorCard({
   actionLabel?: string;
   onAction?: () => void;
 }) {
+  const logText = buildDebugErrorLog(error);
+
   return (
     <AIChatArtifactMessage title={title}>
       <div style={{ display: "grid", gap: 10 }}>
@@ -550,11 +707,14 @@ function DebugErrorCard({
             </pre>
           </details>
         ) : null}
-        {actionLabel && onAction ? (
-          <button type="button" onClick={onAction}>
-            {actionLabel}
-          </button>
-        ) : null}
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <CopyButton text={logText} label="Copy error log" />
+          {actionLabel && onAction ? (
+            <button type="button" onClick={onAction}>
+              {actionLabel}
+            </button>
+          ) : null}
+        </div>
       </div>
     </AIChatArtifactMessage>
   );
@@ -572,6 +732,12 @@ function ToolActivityCard({
   return (
     <AIChatArtifactMessage title="Tool activity">
       <div style={{ display: "grid", gap: 10 }}>
+        <div style={{ display: "flex", justifyContent: "flex-end" }}>
+          <CopyButton
+            text={toolParts.map((toolPart) => buildToolPartLog(toolPart)).join("\n\n")}
+            label="Copy all tool logs"
+          />
+        </div>
         {toolParts.map((toolPart) => {
           const input = stringifyForDisplay(toolPart.input);
           const output = stringifyForDisplay(toolPart.output);
@@ -592,6 +758,12 @@ function ToolActivityCard({
                 <p style={{ margin: 0, fontSize: 12, color: "#57534e" }}>
                   Tool call id: {toolPart.toolCallId}
                 </p>
+                <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                  <CopyButton
+                    text={buildToolPartLog(toolPart)}
+                    label="Copy tool log"
+                  />
+                </div>
                 {input ? (
                   <details>
                     <summary>Input</summary>
@@ -642,6 +814,9 @@ function AgentTracePanel({ trace }: { trace: AgentTraceData | null }) {
   return (
     <AIChatArtifactMessage title="Execution trace">
       <div style={{ display: "grid", gap: 10 }}>
+        <div style={{ display: "flex", justifyContent: "flex-end" }}>
+          <CopyButton text={buildAgentTraceLog(trace)} label="Copy trace" />
+        </div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           {trace.status ? (
             <StatusBadge
@@ -785,6 +960,58 @@ function ToolStatusCard({
 
   if (toolError) {
     return <DebugErrorCard title="Step failed" error={toolError} />;
+  }
+
+  if (
+    suspendedTool?.toolName === "listContentTypesClient" &&
+    suspendedTool.toolCallId === activeSuspensionToolCallId
+  ) {
+    return (
+      <AIChatArtifactMessage title="Loading content types">
+        <p style={{ margin: 0 }}>
+          Fetching the requested content types from Contentful.
+        </p>
+      </AIChatArtifactMessage>
+    );
+  }
+
+  if (
+    suspendedTool?.toolName === "getEntryDetailsClient" &&
+    suspendedTool.toolCallId === activeSuspensionToolCallId
+  ) {
+    return (
+      <AIChatArtifactMessage title="Loading entry details">
+        <p style={{ margin: 0 }}>
+          Reading the entry and its content type metadata.
+        </p>
+      </AIChatArtifactMessage>
+    );
+  }
+
+  if (
+    suspendedTool?.toolName === "readEntriesClient" &&
+    suspendedTool.toolCallId === activeSuspensionToolCallId
+  ) {
+    return (
+      <AIChatArtifactMessage title="Reading entries">
+        <p style={{ margin: 0 }}>
+          Loading localized entry fields from Contentful.
+        </p>
+      </AIChatArtifactMessage>
+    );
+  }
+
+  if (
+    suspendedTool?.toolName === "updateEntryAndPublishClient" &&
+    suspendedTool.toolCallId === activeSuspensionToolCallId
+  ) {
+    return (
+      <AIChatArtifactMessage title="Publishing entry updates">
+        <p style={{ margin: 0 }}>
+          Updating the entry and publishing the new version.
+        </p>
+      </AIChatArtifactMessage>
+    );
   }
 
   if (
@@ -956,6 +1183,82 @@ export default function ChatWorkspace({
     setChatMemory(loadChatMemory(storageKey));
   }, [storageKey]);
 
+  async function loadContentTypes(
+    toolInput: ListContentTypesToolInput,
+  ): Promise<ListContentTypesToolOutput> {
+    try {
+      return await listContentTypes(sdk, toolInput);
+    } catch (error) {
+      throw createChatDebugError(error, {
+        code: "list_content_types_failed",
+        phase: "listing-content-types",
+        toolName: "listContentTypesClient",
+        details: {
+          requestedContentTypeIds: toolInput.contentTypeIds,
+          includeFields: toolInput.includeFields,
+          limit: toolInput.limit,
+        },
+      });
+    }
+  }
+
+  async function loadEntryDetails(
+    toolInput: GetEntryDetailsToolInput,
+  ): Promise<GetEntryDetailsToolOutput> {
+    try {
+      return await getEntryDetailsWithContentType(sdk, toolInput);
+    } catch (error) {
+      throw createChatDebugError(error, {
+        code: "get_entry_details_failed",
+        phase: "loading-entry-details",
+        toolName: "getEntryDetailsClient",
+        details: {
+          entryId: toolInput.entryId,
+          locale: toolInput.locale,
+          includeContentTypeFields: toolInput.includeContentTypeFields,
+        },
+      });
+    }
+  }
+
+  async function loadEntries(
+    toolInput: ReadEntriesToolInput,
+  ): Promise<ReadEntriesToolOutput> {
+    try {
+      return await readEntries(sdk, toolInput);
+    } catch (error) {
+      throw createChatDebugError(error, {
+        code: "read_entries_failed",
+        phase: "reading-entries",
+        toolName: "readEntriesClient",
+        details: {
+          entryIds: toolInput.entryIds,
+          locales: toolInput.locales,
+        },
+      });
+    }
+  }
+
+  async function publishEntryUpdates(
+    toolInput: UpdateEntryAndPublishToolInput,
+  ): Promise<UpdateEntryAndPublishToolOutput> {
+    try {
+      return await updateEntryAndPublish(sdk, toolInput);
+    } catch (error) {
+      throw createChatDebugError(error, {
+        code: "update_entry_publish_failed",
+        phase: "publishing-entry-updates",
+        toolName: "updateEntryAndPublishClient",
+        details: {
+          entryId: toolInput.entryId,
+          expectedVersion: toolInput.expectedVersion,
+          expectedContentTypeId: toolInput.expectedContentTypeId,
+          updateCount: toolInput.updates.length,
+        },
+      });
+    }
+  }
+
   async function discoverCandidates(
     toolInput: DiscoverCandidatesToolInput,
   ): Promise<DiscoverCandidatesToolOutput> {
@@ -984,14 +1287,11 @@ export default function ChatWorkspace({
         renameInput.defaultLocale,
         renameInput.contentTypeIds,
       );
-      const variants = buildNameVariants(renameInput.oldProductName);
-      const lexicalMatches = snapshots.filter((candidate) =>
-        candidateContainsVariant(candidate, variants),
+      const candidateSnapshots = prioritizeCandidateSnapshots(
+        snapshots,
+        renameInput.oldProductName,
+        toolInput.maxCandidatesPerRun,
       );
-      const candidateSnapshots =
-        lexicalMatches.length > 0
-          ? lexicalMatches
-          : snapshots.slice(0, toolInput.maxCandidatesPerRun);
 
       return {
         runId: toolInput.runId,
@@ -1130,6 +1430,66 @@ export default function ChatWorkspace({
 
     const run = async () => {
       try {
+        if (activeSuspension.toolName === "listContentTypesClient") {
+          const toolOutput = parseListContentTypesOutput(
+            await loadContentTypes(activeSuspension.input),
+          );
+          if (cancelled) {
+            return;
+          }
+          await resumeSuspendedTool(
+            activeSuspension.toolName,
+            activeSuspension.toolCallId,
+            activeSuspension.runId,
+            toolOutput as unknown as Record<string, unknown>,
+          );
+        }
+
+        if (activeSuspension.toolName === "getEntryDetailsClient") {
+          const toolOutput = parseGetEntryDetailsOutput(
+            await loadEntryDetails(activeSuspension.input),
+          );
+          if (cancelled) {
+            return;
+          }
+          await resumeSuspendedTool(
+            activeSuspension.toolName,
+            activeSuspension.toolCallId,
+            activeSuspension.runId,
+            toolOutput as unknown as Record<string, unknown>,
+          );
+        }
+
+        if (activeSuspension.toolName === "readEntriesClient") {
+          const toolOutput = parseReadEntriesOutput(
+            await loadEntries(activeSuspension.input),
+          );
+          if (cancelled) {
+            return;
+          }
+          await resumeSuspendedTool(
+            activeSuspension.toolName,
+            activeSuspension.toolCallId,
+            activeSuspension.runId,
+            toolOutput as unknown as Record<string, unknown>,
+          );
+        }
+
+        if (activeSuspension.toolName === "updateEntryAndPublishClient") {
+          const toolOutput = parseUpdateEntryAndPublishOutput(
+            await publishEntryUpdates(activeSuspension.input),
+          );
+          if (cancelled) {
+            return;
+          }
+          await resumeSuspendedTool(
+            activeSuspension.toolName,
+            activeSuspension.toolCallId,
+            activeSuspension.runId,
+            toolOutput as unknown as Record<string, unknown>,
+          );
+        }
+
         if (activeSuspension.toolName === "discoverCandidatesClient") {
           const toolOutput = parseDiscoverCandidatesOutput(
             await discoverCandidates(activeSuspension.input),

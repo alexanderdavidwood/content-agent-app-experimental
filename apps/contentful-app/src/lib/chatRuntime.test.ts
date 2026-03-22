@@ -53,11 +53,12 @@ const reviewInput = {
   candidateSnapshots: [],
 };
 
-test("buildWelcomeMessage seeds the chat with a multi-turn rename example", () => {
+test("buildWelcomeMessage advertises rename and inspection workflows", () => {
   const message = buildWelcomeMessage();
 
   assert.equal(message.role, "assistant");
   assert.match((message.parts[0] as any).text, /Rename "Acme Lite" to "Acme Core"/);
+  assert.match((message.parts[0] as any).text, /inspect content types/i);
 });
 
 test("getLatestSuspendedToolCall returns the current review suspension", () => {
@@ -107,6 +108,42 @@ test("getLatestSuspendedToolCall supports legacy camelCase suspension parts", ()
 
   assert.equal(pending?.toolCallId, "tool-review-legacy");
   assert.equal(pending?.toolName, "reviewProposalsClient");
+});
+
+test("getLatestSuspendedToolCall parses content inspection tool payloads", () => {
+  const message: RenameChatMessage = {
+    id: "assistant-content-types",
+    role: "assistant",
+    parts: [
+      {
+        type: TOOL_CALL_SUSPENDED_PART_TYPE,
+        data: {
+          state: "data-tool-call-suspended",
+          runId: "run-3",
+          toolCallId: "tool-content-types",
+          toolName: "listContentTypesClient",
+          suspendPayload: {
+            contentTypeIds: ["page"],
+            includeFields: true,
+            limit: 10,
+          },
+        },
+      } as any,
+    ],
+  };
+
+  const pending = getLatestSuspendedToolCall([message]);
+
+  assert.equal(pending?.toolCallId, "tool-content-types");
+  assert.equal(pending?.toolName, "listContentTypesClient");
+  assert.deepEqual(
+    pending?.input,
+    {
+      contentTypeIds: ["page"],
+      includeFields: true,
+      limit: 10,
+    },
+  );
 });
 
 test("review draft helpers preserve edited text and only bulk-approve safe changes", () => {
