@@ -1,7 +1,21 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { fallbackKeywordSearch, performCandidateSearch } from "./contentfulClient";
+import {
+  buildDefaultRenameInput,
+  fallbackKeywordSearch,
+  getEntryDetailsWithContentType,
+  listContentTypes,
+  performCandidateSearch,
+  readEntries,
+  updateEntryAndPublish,
+} from "./contentfulClient";
+
+test("buildDefaultRenameInput prefers hybrid search to avoid missing exact matches", () => {
+  const result = buildDefaultRenameInput({ surface: "page" }, "en-US");
+
+  assert.equal(result.searchMode, "hybrid");
+});
 
 test("fallbackKeywordSearch truncates duplicate porter queries with the shared cap", async () => {
   const seenQueries: string[] = [];
@@ -172,4 +186,365 @@ test("performCandidateSearch enforces keyword mode when semantic search is disab
     result.searchResult.warnings[0] ?? "",
     /Semantic search is disabled/i,
   );
+});
+
+test("listContentTypes returns requested content types and missing ids", async () => {
+  const result = await listContentTypes(
+    {
+      cmaAdapter: {},
+      ids: { space: "space-id" },
+      parameters: {},
+    },
+    {
+      contentTypeIds: ["page", "missing"],
+      includeFields: true,
+      limit: 10,
+    },
+    {
+      contentType: {
+        async get({ contentTypeId }: { contentTypeId: string }) {
+          if (contentTypeId === "missing") {
+            const error = new Error("NotFound");
+            (error as Error & { status?: number }).status = 404;
+            throw error;
+          }
+
+          return {
+            sys: { id: "page" },
+            name: "Page",
+            description: "Page content type",
+            displayField: "title",
+            fields: [
+              {
+                id: "title",
+                name: "Title",
+                type: "Symbol",
+                required: true,
+                localized: true,
+              },
+            ],
+          };
+        },
+      },
+      entry: {} as any,
+    } as any,
+  );
+
+  assert.deepEqual(result.requestedContentTypeIds, ["page", "missing"]);
+  assert.deepEqual(result.missingContentTypeIds, ["missing"]);
+  assert.equal(result.contentTypes[0]?.contentTypeId, "page");
+  assert.equal(result.contentTypes[0]?.fields?.[0]?.fieldId, "title");
+});
+
+test("getEntryDetailsWithContentType returns a localized entry plus content type metadata", async () => {
+  const result = await getEntryDetailsWithContentType(
+    {
+      cmaAdapter: {},
+      ids: { space: "space-id" },
+      parameters: {},
+    },
+    {
+      entryId: "entry-1",
+      locale: "en-US",
+      includeContentTypeFields: true,
+    },
+    {
+      entry: {
+        async get() {
+          return {
+            sys: {
+              id: "entry-1",
+              version: 7,
+              createdAt: "2026-03-20T10:00:00.000Z",
+              updatedAt: "2026-03-21T10:00:00.000Z",
+              contentType: {
+                sys: {
+                  id: "page",
+                },
+              },
+            },
+            fields: {
+              title: {
+                "en-US": "Hello",
+                "de-DE": "Hallo",
+              },
+            },
+          };
+        },
+      },
+      contentType: {
+        async get() {
+          return {
+            sys: { id: "page" },
+            name: "Page",
+            displayField: "title",
+            fields: [
+              {
+                id: "title",
+                name: "Title",
+                type: "Symbol",
+                required: true,
+                localized: true,
+              },
+            ],
+          };
+        },
+      },
+    } as any,
+  );
+
+  assert.equal(result.locale, "en-US");
+  assert.deepEqual(result.entry.fields, {
+    title: {
+      "en-US": "Hello",
+    },
+  });
+  assert.equal(result.contentType.contentTypeId, "page");
+});
+
+test("readEntries reports missing entries and preserves requested locale filters", async () => {
+  const result = await readEntries(
+    {
+      cmaAdapter: {},
+      ids: { space: "space-id" },
+      parameters: {},
+    },
+    {
+      entryIds: ["entry-1", "missing"],
+      locales: ["en-US"],
+    },
+    {
+      entry: {
+        async get({ entryId }: { entryId: string }) {
+          if (entryId === "missing") {
+            const error = new Error("NotFound");
+            (error as Error & { status?: number }).status = 404;
+            throw error;
+          }
+
+          return {
+            sys: {
+              id: entryId,
+              version: 3,
+              updatedAt: "2026-03-21T10:00:00.000Z",
+              contentType: {
+                sys: {
+                  id: "page",
+                },
+              },
+            },
+            fields: {
+              title: {
+                "en-US": "Hello",
+                "fr-FR": "Bonjour",
+              },
+            },
+          };
+        },
+      },
+      contentType: {} as any,
+    } as any,
+  );
+
+  assert.deepEqual(result.requestedEntryIds, ["entry-1", "missing"]);
+  assert.deepEqual(result.locales, ["en-US"]);
+  assert.deepEqual(result.missingEntryIds, ["missing"]);
+  assert.deepEqual(result.entries[0]?.fields, {
+    title: {
+      "en-US": "Hello",
+    },
+  });
+});
+
+test("updateEntryAndPublish retries once after a version mismatch", async () => {
+  const seenVersions: number[] = [];
+  let getCount = 0;
+  const result = await updateEntryAndPublish(
+    {
+      cmaAdapter: {},
+      ids: { space: "space-id" },
+      parameters: {},
+    },
+    {
+      entryId: "entry-1",
+      updates: [
+        {
+          fieldId: "title",
+          locale: "en-US",
+          value: "Updated title",
+        },
+      ],
+    },
+    {
+      entry: {
+        async get() {
+          getCount += 1;
+          return {
+            sys: {
+              id: "entry-1",
+              version: getCount === 1 ? 2 : 3,
+              updatedAt: "2026-03-21T10:00:00.000Z",
+              contentType: {
+                sys: {
+                  id: "page",
+                },
+              },
+            },
+            fields: {
+              title: {
+                "en-US": "Original title",
+              },
+            },
+          };
+        },
+        async update(
+          _args: { entryId: string },
+          payload: {
+            fields: Record<string, Record<string, unknown>>;
+            sys: { version: number };
+          },
+        ) {
+          seenVersions.push(payload.sys.version);
+          if (seenVersions.length === 1) {
+            throw new Error("VersionMismatch");
+          }
+
+          return {
+            sys: {
+              id: "entry-1",
+              version: 4,
+              updatedAt: "2026-03-22T10:00:00.000Z",
+              contentType: {
+                sys: {
+                  id: "page",
+                },
+              },
+            },
+            fields: payload.fields,
+          };
+        },
+        async publish() {
+          return {
+            sys: {
+              id: "entry-1",
+              version: 5,
+              updatedAt: "2026-03-22T10:00:01.000Z",
+              publishedAt: "2026-03-22T10:00:01.000Z",
+              publishedVersion: 4,
+              contentType: {
+                sys: {
+                  id: "page",
+                },
+              },
+            },
+            fields: {
+              title: {
+                "en-US": "Updated title",
+              },
+            },
+          };
+        },
+      },
+      contentType: {
+        async get() {
+          return {
+            sys: { id: "page" },
+            fields: [
+              {
+                id: "title",
+                type: "Symbol",
+              },
+            ],
+          };
+        },
+      },
+    } as any,
+  );
+
+  assert.deepEqual(seenVersions, [2, 3]);
+  assert.equal(result.status, "PUBLISHED");
+  assert.equal(result.version, 5);
+});
+
+test("updateEntryAndPublish reports UPDATED_NOT_PUBLISHED when publish fails", async () => {
+  const result = await updateEntryAndPublish(
+    {
+      cmaAdapter: {},
+      ids: { space: "space-id" },
+      parameters: {},
+    },
+    {
+      entryId: "entry-1",
+      updates: [
+        {
+          fieldId: "title",
+          locale: "en-US",
+          value: "Updated title",
+        },
+      ],
+    },
+    {
+      entry: {
+        async get() {
+          return {
+            sys: {
+              id: "entry-1",
+              version: 2,
+              updatedAt: "2026-03-21T10:00:00.000Z",
+              contentType: {
+                sys: {
+                  id: "page",
+                },
+              },
+            },
+            fields: {
+              title: {
+                "en-US": "Original title",
+              },
+            },
+          };
+        },
+        async update(
+          _args: { entryId: string },
+          payload: {
+            fields: Record<string, Record<string, unknown>>;
+            sys: { version: number };
+          },
+        ) {
+          return {
+            sys: {
+              id: "entry-1",
+              version: 3,
+              updatedAt: "2026-03-22T10:00:00.000Z",
+              contentType: {
+                sys: {
+                  id: "page",
+                },
+              },
+            },
+            fields: payload.fields,
+          };
+        },
+        async publish() {
+          throw new Error("publish denied");
+        },
+      },
+      contentType: {
+        async get() {
+          return {
+            sys: { id: "page" },
+            fields: [
+              {
+                id: "title",
+                type: "Symbol",
+              },
+            ],
+          };
+        },
+      },
+    } as any,
+  );
+
+  assert.equal(result.status, "UPDATED_NOT_PUBLISHED");
+  assert.match(result.message ?? "", /publish denied/i);
 });

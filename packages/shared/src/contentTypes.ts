@@ -17,6 +17,16 @@ export const APPLY_RESULT_STATUSES = [
 
 export type ApplyResultStatus = (typeof APPLY_RESULT_STATUSES)[number];
 
+export const ENTRY_UPDATE_PUBLISH_RESULT_STATUSES = [
+  "PUBLISHED",
+  "UPDATED_NOT_PUBLISHED",
+  "CONFLICT",
+  "FAILED",
+] as const;
+
+export type EntryUpdatePublishResultStatus =
+  (typeof ENTRY_UPDATE_PUBLISH_RESULT_STATUSES)[number];
+
 export const RISK_FLAGS = [
   "LEGAL_CONTEXT",
   "CODE_SNIPPET",

@@ -9,8 +9,16 @@ import type {
   DiscoverCandidatesToolOutput,
   DraftProposalsToolInput,
   DraftProposalsToolOutput,
+  GetEntryDetailsToolInput,
+  GetEntryDetailsToolOutput,
+  ListContentTypesToolInput,
+  ListContentTypesToolOutput,
+  ReadEntriesToolInput,
+  ReadEntriesToolOutput,
   ReviewProposalsToolInput,
   ReviewProposalsToolOutput,
+  UpdateEntryAndPublishToolInput,
+  UpdateEntryAndPublishToolOutput,
 } from "@contentful-rename/shared";
 import {
   agentTraceDataSchema,
@@ -52,6 +60,22 @@ export type RenameChatDataParts = {
 };
 
 export type RenameChatTools = {
+  listContentTypesClient: {
+    input: ListContentTypesToolInput;
+    output: ListContentTypesToolOutput;
+  };
+  getEntryDetailsClient: {
+    input: GetEntryDetailsToolInput;
+    output: GetEntryDetailsToolOutput;
+  };
+  readEntriesClient: {
+    input: ReadEntriesToolInput;
+    output: ReadEntriesToolOutput;
+  };
+  updateEntryAndPublishClient: {
+    input: UpdateEntryAndPublishToolInput;
+    output: UpdateEntryAndPublishToolOutput;
+  };
   discoverCandidatesClient: {
     input: DiscoverCandidatesToolInput;
     output: DiscoverCandidatesToolOutput;

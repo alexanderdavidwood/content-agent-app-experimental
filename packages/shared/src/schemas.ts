@@ -3,6 +3,7 @@ import { z } from "zod";
 import {
   APPLY_RESULT_STATUSES,
   CONTENTFUL_SUPPORTED_FIELD_TYPES,
+  ENTRY_UPDATE_PUBLISH_RESULT_STATUSES,
   RISK_FLAGS,
 } from "./contentTypes";
 
@@ -62,9 +63,13 @@ export const renameChatRequestSchema = z.object({
 export const renameRunPhaseSchema = z.enum([
   "parsing-request",
   "planning-search",
+  "listing-content-types",
+  "loading-entry-details",
+  "reading-entries",
   "searching-contentful",
   "reviewing-proposed-changes",
   "applying-approved-changes",
+  "publishing-entry-updates",
   "completed",
   "error",
 ]);
@@ -102,6 +107,104 @@ export const applyResultSchema = z.object({
   entryId: z.string(),
   status: z.enum(APPLY_RESULT_STATUSES),
   newVersion: z.number().int().nonnegative().optional(),
+  message: z.string().optional(),
+});
+
+export const contentTypeFieldSummarySchema = z.object({
+  fieldId: z.string(),
+  name: z.string(),
+  type: z.string(),
+  required: z.boolean(),
+  localized: z.boolean(),
+  disabled: z.boolean().default(false),
+  omitted: z.boolean().default(false),
+  linkType: z.string().optional(),
+  itemsType: z.string().optional(),
+  itemsLinkType: z.string().optional(),
+});
+
+export const contentTypeSummarySchema = z.object({
+  contentTypeId: z.string(),
+  name: z.string(),
+  description: z.string().optional(),
+  displayField: z.string().optional(),
+  fieldCount: z.number().int().nonnegative(),
+  fields: z.array(contentTypeFieldSummarySchema).optional(),
+});
+
+export const contentEntryFieldsSchema = z.record(
+  z.string(),
+  z.record(z.string(), z.unknown()),
+);
+
+export const contentEntryRecordSchema = z.object({
+  entryId: z.string(),
+  contentTypeId: z.string(),
+  version: z.number().int().nonnegative(),
+  createdAt: z.string().optional(),
+  updatedAt: z.string(),
+  publishedAt: z.string().optional(),
+  publishedVersion: z.number().int().nonnegative().optional(),
+  fields: contentEntryFieldsSchema,
+});
+
+export const listContentTypesToolInputSchema = z.object({
+  contentTypeIds: z.array(z.string().min(1)).max(50).default([]),
+  includeFields: z.boolean().default(false),
+  limit: z.number().int().positive().max(100).default(20),
+});
+
+export const listContentTypesToolOutputSchema = z.object({
+  requestedContentTypeIds: z.array(z.string()).default([]),
+  contentTypes: z.array(contentTypeSummarySchema),
+  missingContentTypeIds: z.array(z.string()).default([]),
+});
+
+export const getEntryDetailsToolInputSchema = z.object({
+  entryId: z.string().min(1),
+  locale: z.string().min(1),
+  includeContentTypeFields: z.boolean().default(true),
+});
+
+export const getEntryDetailsToolOutputSchema = z.object({
+  entry: contentEntryRecordSchema,
+  contentType: contentTypeSummarySchema,
+  locale: z.string(),
+});
+
+export const readEntriesToolInputSchema = z.object({
+  entryIds: z.array(z.string().min(1)).min(1).max(20),
+  locales: z.array(z.string().min(1)).min(1).max(10),
+});
+
+export const readEntriesToolOutputSchema = z.object({
+  requestedEntryIds: z.array(z.string()).min(1),
+  locales: z.array(z.string()).min(1),
+  entries: z.array(contentEntryRecordSchema),
+  missingEntryIds: z.array(z.string()).default([]),
+});
+
+export const entryFieldUpdateSchema = z.object({
+  fieldId: z.string().min(1),
+  locale: z.string().min(1),
+  value: z.unknown(),
+});
+
+export const updateEntryAndPublishToolInputSchema = z.object({
+  entryId: z.string().min(1),
+  expectedVersion: z.number().int().positive().optional(),
+  expectedContentTypeId: z.string().min(1).optional(),
+  updates: z.array(entryFieldUpdateSchema).min(1).max(100),
+});
+
+export const updateEntryAndPublishToolOutputSchema = z.object({
+  entryId: z.string(),
+  contentTypeId: z.string(),
+  status: z.enum(ENTRY_UPDATE_PUBLISH_RESULT_STATUSES),
+  version: z.number().int().nonnegative().optional(),
+  publishedVersion: z.number().int().nonnegative().optional(),
+  updatedAt: z.string().optional(),
+  publishedAt: z.string().optional(),
   message: z.string().optional(),
 });
 
@@ -374,6 +477,12 @@ export type ProposedChange = z.infer<typeof proposedChangeSchema>;
 export type ApprovedChange = z.infer<typeof approvedChangeSchema>;
 export type ApplyOperation = z.infer<typeof applyOperationSchema>;
 export type ApplyResult = z.infer<typeof applyResultSchema>;
+export type ContentTypeFieldSummary = z.infer<
+  typeof contentTypeFieldSummarySchema
+>;
+export type ContentTypeSummary = z.infer<typeof contentTypeSummarySchema>;
+export type ContentEntryFields = z.infer<typeof contentEntryFieldsSchema>;
+export type ContentEntryRecord = z.infer<typeof contentEntryRecordSchema>;
 export type AppInstallationParameters = z.infer<
   typeof appInstallationParametersSchema
 >;
@@ -393,6 +502,27 @@ export type RenameRunSummary = z.infer<typeof renameRunSummarySchema>;
 export type ChatMessageMetadata = z.infer<typeof chatMessageMetadataSchema>;
 export type ChatRunError = z.infer<typeof chatRunErrorSchema>;
 export type ChatDebugError = z.infer<typeof chatDebugErrorSchema>;
+export type ListContentTypesToolInput = z.infer<
+  typeof listContentTypesToolInputSchema
+>;
+export type ListContentTypesToolOutput = z.infer<
+  typeof listContentTypesToolOutputSchema
+>;
+export type GetEntryDetailsToolInput = z.infer<
+  typeof getEntryDetailsToolInputSchema
+>;
+export type GetEntryDetailsToolOutput = z.infer<
+  typeof getEntryDetailsToolOutputSchema
+>;
+export type ReadEntriesToolInput = z.infer<typeof readEntriesToolInputSchema>;
+export type ReadEntriesToolOutput = z.infer<typeof readEntriesToolOutputSchema>;
+export type EntryFieldUpdate = z.infer<typeof entryFieldUpdateSchema>;
+export type UpdateEntryAndPublishToolInput = z.infer<
+  typeof updateEntryAndPublishToolInputSchema
+>;
+export type UpdateEntryAndPublishToolOutput = z.infer<
+  typeof updateEntryAndPublishToolOutputSchema
+>;
 export type DiscoverCandidatesToolInput = z.infer<
   typeof discoverCandidatesToolInputSchema
 >;
