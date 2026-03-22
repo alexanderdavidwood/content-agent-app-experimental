@@ -23,16 +23,28 @@ import {
   type ChatDebugError,
   type DiscoverCandidatesToolInput,
   type DiscoverCandidatesToolOutput,
+  type GetEntryDetailsToolInput,
+  type GetEntryDetailsToolOutput,
+  type ListContentTypesToolInput,
+  type ListContentTypesToolOutput,
+  type ReadEntriesToolInput,
+  type ReadEntriesToolOutput,
   type ReviewProposalsToolInput,
   type SemanticSearchResult,
+  type UpdateEntryAndPublishToolInput,
+  type UpdateEntryAndPublishToolOutput,
 } from "@contentful-rename/shared";
 
 import {
   applyOperations,
   buildApplyOperations,
   fetchEntrySnapshots,
+  getEntryDetailsWithContentType,
   getInstallationParameters,
+  listContentTypes,
   performCandidateSearch,
+  readEntries,
+  updateEntryAndPublish,
 } from "../../lib/contentfulClient";
 import {
   approveSafeChanges,
@@ -49,6 +61,10 @@ import {
   getToolError,
   parseApplyApprovedChangesOutput,
   parseDiscoverCandidatesOutput,
+  parseGetEntryDetailsOutput,
+  parseListContentTypesOutput,
+  parseReadEntriesOutput,
+  parseUpdateEntryAndPublishOutput,
   type ReviewDraftMap,
   type ToolPartSummary,
 } from "../../lib/chatRuntime";
@@ -154,6 +170,14 @@ function loadChatMemory(storageKey: string) {
 
 function clientActionLabel(toolName: string | null) {
   switch (toolName) {
+    case "listContentTypesClient":
+      return "Loading content types";
+    case "getEntryDetailsClient":
+      return "Loading entry details";
+    case "readEntriesClient":
+      return "Reading entries";
+    case "updateEntryAndPublishClient":
+      return "Publishing entry updates";
     case "discoverCandidatesClient":
       return "Searching Contentful";
     case "applyApprovedChangesClient":
@@ -165,6 +189,14 @@ function clientActionLabel(toolName: string | null) {
 
 function phaseForToolName(toolName: string | null) {
   switch (toolName) {
+    case "listContentTypesClient":
+      return "listing-content-types" as const;
+    case "getEntryDetailsClient":
+      return "loading-entry-details" as const;
+    case "readEntriesClient":
+      return "reading-entries" as const;
+    case "updateEntryAndPublishClient":
+      return "publishing-entry-updates" as const;
     case "discoverCandidatesClient":
       return "searching-contentful" as const;
     case "reviewProposalsClient":
@@ -963,6 +995,58 @@ function ToolStatusCard({
   }
 
   if (
+    suspendedTool?.toolName === "listContentTypesClient" &&
+    suspendedTool.toolCallId === activeSuspensionToolCallId
+  ) {
+    return (
+      <AIChatArtifactMessage title="Loading content types">
+        <p style={{ margin: 0 }}>
+          Fetching the requested content types from Contentful.
+        </p>
+      </AIChatArtifactMessage>
+    );
+  }
+
+  if (
+    suspendedTool?.toolName === "getEntryDetailsClient" &&
+    suspendedTool.toolCallId === activeSuspensionToolCallId
+  ) {
+    return (
+      <AIChatArtifactMessage title="Loading entry details">
+        <p style={{ margin: 0 }}>
+          Reading the entry and its content type metadata.
+        </p>
+      </AIChatArtifactMessage>
+    );
+  }
+
+  if (
+    suspendedTool?.toolName === "readEntriesClient" &&
+    suspendedTool.toolCallId === activeSuspensionToolCallId
+  ) {
+    return (
+      <AIChatArtifactMessage title="Reading entries">
+        <p style={{ margin: 0 }}>
+          Loading localized entry fields from Contentful.
+        </p>
+      </AIChatArtifactMessage>
+    );
+  }
+
+  if (
+    suspendedTool?.toolName === "updateEntryAndPublishClient" &&
+    suspendedTool.toolCallId === activeSuspensionToolCallId
+  ) {
+    return (
+      <AIChatArtifactMessage title="Publishing entry updates">
+        <p style={{ margin: 0 }}>
+          Updating the entry and publishing the new version.
+        </p>
+      </AIChatArtifactMessage>
+    );
+  }
+
+  if (
     suspendedTool?.toolName === "discoverCandidatesClient" &&
     suspendedTool.toolCallId === activeSuspensionToolCallId
   ) {
@@ -1130,6 +1214,82 @@ export default function ChatWorkspace({
   useEffect(() => {
     setChatMemory(loadChatMemory(storageKey));
   }, [storageKey]);
+
+  async function loadContentTypes(
+    toolInput: ListContentTypesToolInput,
+  ): Promise<ListContentTypesToolOutput> {
+    try {
+      return await listContentTypes(sdk, toolInput);
+    } catch (error) {
+      throw createChatDebugError(error, {
+        code: "list_content_types_failed",
+        phase: "listing-content-types",
+        toolName: "listContentTypesClient",
+        details: {
+          requestedContentTypeIds: toolInput.contentTypeIds,
+          includeFields: toolInput.includeFields,
+          limit: toolInput.limit,
+        },
+      });
+    }
+  }
+
+  async function loadEntryDetails(
+    toolInput: GetEntryDetailsToolInput,
+  ): Promise<GetEntryDetailsToolOutput> {
+    try {
+      return await getEntryDetailsWithContentType(sdk, toolInput);
+    } catch (error) {
+      throw createChatDebugError(error, {
+        code: "get_entry_details_failed",
+        phase: "loading-entry-details",
+        toolName: "getEntryDetailsClient",
+        details: {
+          entryId: toolInput.entryId,
+          locale: toolInput.locale,
+          includeContentTypeFields: toolInput.includeContentTypeFields,
+        },
+      });
+    }
+  }
+
+  async function loadEntries(
+    toolInput: ReadEntriesToolInput,
+  ): Promise<ReadEntriesToolOutput> {
+    try {
+      return await readEntries(sdk, toolInput);
+    } catch (error) {
+      throw createChatDebugError(error, {
+        code: "read_entries_failed",
+        phase: "reading-entries",
+        toolName: "readEntriesClient",
+        details: {
+          entryIds: toolInput.entryIds,
+          locales: toolInput.locales,
+        },
+      });
+    }
+  }
+
+  async function publishEntryUpdates(
+    toolInput: UpdateEntryAndPublishToolInput,
+  ): Promise<UpdateEntryAndPublishToolOutput> {
+    try {
+      return await updateEntryAndPublish(sdk, toolInput);
+    } catch (error) {
+      throw createChatDebugError(error, {
+        code: "update_entry_publish_failed",
+        phase: "publishing-entry-updates",
+        toolName: "updateEntryAndPublishClient",
+        details: {
+          entryId: toolInput.entryId,
+          expectedVersion: toolInput.expectedVersion,
+          expectedContentTypeId: toolInput.expectedContentTypeId,
+          updateCount: toolInput.updates.length,
+        },
+      });
+    }
+  }
 
   async function discoverCandidates(
     toolInput: DiscoverCandidatesToolInput,
@@ -1305,6 +1465,66 @@ export default function ChatWorkspace({
 
     const run = async () => {
       try {
+        if (activeSuspension.toolName === "listContentTypesClient") {
+          const toolOutput = parseListContentTypesOutput(
+            await loadContentTypes(activeSuspension.input),
+          );
+          if (cancelled) {
+            return;
+          }
+          await resumeSuspendedTool(
+            activeSuspension.toolName,
+            activeSuspension.toolCallId,
+            activeSuspension.runId,
+            toolOutput as unknown as Record<string, unknown>,
+          );
+        }
+
+        if (activeSuspension.toolName === "getEntryDetailsClient") {
+          const toolOutput = parseGetEntryDetailsOutput(
+            await loadEntryDetails(activeSuspension.input),
+          );
+          if (cancelled) {
+            return;
+          }
+          await resumeSuspendedTool(
+            activeSuspension.toolName,
+            activeSuspension.toolCallId,
+            activeSuspension.runId,
+            toolOutput as unknown as Record<string, unknown>,
+          );
+        }
+
+        if (activeSuspension.toolName === "readEntriesClient") {
+          const toolOutput = parseReadEntriesOutput(
+            await loadEntries(activeSuspension.input),
+          );
+          if (cancelled) {
+            return;
+          }
+          await resumeSuspendedTool(
+            activeSuspension.toolName,
+            activeSuspension.toolCallId,
+            activeSuspension.runId,
+            toolOutput as unknown as Record<string, unknown>,
+          );
+        }
+
+        if (activeSuspension.toolName === "updateEntryAndPublishClient") {
+          const toolOutput = parseUpdateEntryAndPublishOutput(
+            await publishEntryUpdates(activeSuspension.input),
+          );
+          if (cancelled) {
+            return;
+          }
+          await resumeSuspendedTool(
+            activeSuspension.toolName,
+            activeSuspension.toolCallId,
+            activeSuspension.runId,
+            toolOutput as unknown as Record<string, unknown>,
+          );
+        }
+
         if (activeSuspension.toolName === "discoverCandidatesClient") {
           const toolOutput = parseDiscoverCandidatesOutput(
             await discoverCandidates(activeSuspension.input),
