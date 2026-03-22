@@ -254,6 +254,161 @@ function StatusBadge({ label, state }: { label: string; state: string }) {
   );
 }
 
+function buildDebugErrorLog(error: ChatDebugError) {
+  const lines = [`message: ${error.message}`];
+
+  if (error.code) {
+    lines.push(`code: ${error.code}`);
+  }
+  if (error.phase) {
+    lines.push(`phase: ${error.phase}`);
+  }
+  if (error.toolName) {
+    lines.push(`tool: ${error.toolName}`);
+  }
+  if (error.details.length > 0) {
+    lines.push("details:");
+    lines.push(...error.details.map((detail) => `- ${detail}`));
+  }
+  if (error.stack) {
+    lines.push("stack:");
+    lines.push(error.stack);
+  }
+
+  return lines.join("\n");
+}
+
+function buildToolPartLog(toolPart: ToolPartSummary) {
+  const lines = [
+    `tool: ${toolPart.type.slice(5)}`,
+    `toolCallId: ${toolPart.toolCallId}`,
+    `state: ${toolPart.state}`,
+  ];
+  const input = stringifyForDisplay(toolPart.input);
+  const output = stringifyForDisplay(toolPart.output);
+  const parsedError = normalizeDebugError(toolPart.errorText, {
+    toolName: toolPart.type.slice(5),
+  });
+
+  if (input) {
+    lines.push("input:");
+    lines.push(input);
+  }
+  if (output) {
+    lines.push("output:");
+    lines.push(output);
+  }
+  if (parsedError) {
+    lines.push("error:");
+    lines.push(buildDebugErrorLog(parsedError));
+  }
+
+  return lines.join("\n");
+}
+
+function buildAgentTraceLog(trace: AgentTraceData) {
+  const lines = [];
+
+  if (trace.status) {
+    lines.push(`status: ${trace.status}`);
+  }
+  if (trace.response?.modelId) {
+    lines.push(`model: ${trace.response.modelId}`);
+  }
+  if (trace.finishReason) {
+    lines.push(`finishReason: ${trace.finishReason}`);
+  }
+
+  trace.steps.forEach((step, index) => {
+    lines.push(`step ${index + 1}:`);
+
+    if (step.stepType) {
+      lines.push(`  stepType: ${step.stepType}`);
+    }
+    if (step.reasoningText) {
+      lines.push("  reasoning:");
+      lines.push(
+        ...step.reasoningText.split("\n").map((line) => `    ${line}`),
+      );
+    }
+    if (step.warnings.length > 0) {
+      lines.push("  warnings:");
+      lines.push(
+        ...step.warnings.map((warning) => `    - ${stringifyForDisplay(warning)}`),
+      );
+    }
+
+    traceStepCalls(step).forEach((call) => {
+      lines.push(`  call: ${extractTraceToolName(call)}`);
+      lines.push(`    toolCallId: ${extractTraceToolCallId(call)}`);
+      const input = stringifyForDisplay(extractTraceToolInput(call));
+      if (input) {
+        lines.push("    input:");
+        lines.push(...input.split("\n").map((line) => `      ${line}`));
+      }
+    });
+
+    traceStepResults(step).forEach((result) => {
+      lines.push(`  result: ${extractTraceToolName(result)}`);
+      lines.push(`    toolCallId: ${extractTraceToolCallId(result)}`);
+      const errorText = extractTraceToolError(result);
+      if (errorText) {
+        lines.push("    error:");
+        lines.push(...errorText.split("\n").map((line) => `      ${line}`));
+      } else {
+        const output = stringifyForDisplay(extractTraceToolOutput(result));
+        if (output) {
+          lines.push("    output:");
+          lines.push(...output.split("\n").map((line) => `      ${line}`));
+        }
+      }
+    });
+  });
+
+  if (trace.steps.length === 0 && trace.reasoning.length > 0) {
+    lines.push("reasoning:");
+    lines.push(trace.reasoning.join(""));
+  }
+
+  return lines.join("\n");
+}
+
+function CopyButton({
+  text,
+  label,
+}: {
+  text: string;
+  label: string;
+}) {
+  const [status, setStatus] = useState<"idle" | "copied" | "failed">("idle");
+
+  return (
+    <button
+      type="button"
+      onClick={async () => {
+        try {
+          if (!navigator?.clipboard?.writeText) {
+            throw new Error("Clipboard API unavailable");
+          }
+
+          await navigator.clipboard.writeText(text);
+          setStatus("copied");
+          window.setTimeout(() => setStatus("idle"), 1500);
+        } catch {
+          setStatus("failed");
+          window.setTimeout(() => setStatus("idle"), 1500);
+        }
+      }}
+    >
+      {status === "idle"
+        ? label
+        : status === "copied"
+          ? "Copied"
+          : "Copy failed"}
+    </button>
+  );
+}
+
 function normalizeDebugError(
   error: unknown,
   fallback?: Partial<ChatDebugError>,
@@ -508,6 +663,8 @@ function DebugErrorCard({
   actionLabel?: string;
   onAction?: () => void;
 }) {
+  const logText = buildDebugErrorLog(error);
+
   return (
     <AIChatArtifactMessage title={title}>
       <div style={{ display: "grid", gap: 10 }}>
@@ -550,11 +707,14 @@ function DebugErrorCard({
             </pre>
           </details>
         ) : null}
-        {actionLabel && onAction ? (
-          <button type="button" onClick={onAction}>
-            {actionLabel}
-          </button>
-        ) : null}
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <CopyButton text={logText} label="Copy error log" />
+          {actionLabel && onAction ? (
+            <button type="button" onClick={onAction}>
+              {actionLabel}
+            </button>
+          ) : null}
+        </div>
       </div>
     </AIChatArtifactMessage>
   );
@@ -572,6 +732,12 @@ function ToolActivityCard({
   return (
     <AIChatArtifactMessage title="Tool activity">
       <div style={{ display: "grid", gap: 10 }}>
+        <div style={{ display: "flex", justifyContent: "flex-end" }}>
+          <CopyButton
+            text={toolParts.map((toolPart) => buildToolPartLog(toolPart)).join("\n\n")}
+            label="Copy all tool logs"
+          />
+        </div>
         {toolParts.map((toolPart) => {
           const input = stringifyForDisplay(toolPart.input);
           const output = stringifyForDisplay(toolPart.output);
@@ -592,6 +758,12 @@ function ToolActivityCard({
                 <p style={{ margin: 0, fontSize: 12, color: "#57534e" }}>
                   Tool call id: {toolPart.toolCallId}
                 </p>
+                <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                  <CopyButton
+                    text={buildToolPartLog(toolPart)}
+                    label="Copy tool log"
+                  />
+                </div>
                 {input ? (
                   <details>
                     <summary>Input</summary>
@@ -642,6 +814,9 @@ function AgentTracePanel({ trace }: { trace: AgentTraceData | null }) {
   return (
     <AIChatArtifactMessage title="Execution trace">
       <div style={{ display: "grid", gap: 10 }}>
+        <div style={{ display: "flex", justifyContent: "flex-end" }}>
+          <CopyButton text={buildAgentTraceLog(trace)} label="Copy trace" />
+        </div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           {trace.status ? (
             <StatusBadge
