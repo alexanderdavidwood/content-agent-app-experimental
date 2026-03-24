@@ -10,9 +10,24 @@ const chatContext: ChatExecutionContext = {
   defaultLocale: "en-US",
   timeZone: "UTC",
   currentDate: "2026-03-22",
+  organizationId: "org-1",
+  spaceId: "space-1",
+  environmentId: "master",
+  contentfulUserId: "user-1",
   allowedContentTypes: ["landingPage", "blogPost"],
   maxDiscoveryQueries: 5,
   maxCandidatesPerRun: 30,
+  contentOpsProvider: "hybrid",
+  generalContentToolAvailability: {
+    listContentTypes: true,
+    getContentType: true,
+    listEntries: true,
+    getEntry: true,
+    getLocales: true,
+    updateEntry: false,
+    publishEntry: false,
+  },
+  mcpAutoFallbackToClientSdk: true,
   toolAvailability: {
     semanticSearch: true,
     entrySearch: true,
@@ -29,9 +44,22 @@ function createRequestContext(overrides: Partial<ChatExecutionContext> = {}) {
   requestContext.set("defaultLocale", resolved.defaultLocale);
   requestContext.set("timeZone", resolved.timeZone);
   requestContext.set("currentDate", resolved.currentDate);
+  requestContext.set("organizationId", resolved.organizationId);
+  requestContext.set("spaceId", resolved.spaceId);
+  requestContext.set("environmentId", resolved.environmentId);
+  requestContext.set("contentfulUserId", resolved.contentfulUserId);
   requestContext.set("allowedContentTypes", resolved.allowedContentTypes);
   requestContext.set("maxDiscoveryQueries", resolved.maxDiscoveryQueries);
   requestContext.set("maxCandidatesPerRun", resolved.maxCandidatesPerRun);
+  requestContext.set("contentOpsProvider", resolved.contentOpsProvider);
+  requestContext.set(
+    "generalContentToolAvailability",
+    resolved.generalContentToolAvailability,
+  );
+  requestContext.set(
+    "mcpAutoFallbackToClientSdk",
+    resolved.mcpAutoFallbackToClientSdk,
+  );
   requestContext.set("toolAvailability", resolved.toolAvailability);
   if (resolved.surfaceContext) {
     requestContext.set("surfaceContext", resolved.surfaceContext);

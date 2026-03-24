@@ -150,8 +150,12 @@ Important runtime detail:
 | `MASTRA_STORAGE_URL` | No | `apps/mastra` | For BYO libSQL/Turso. If unset, local development falls back to `file:./.mastra/contentful-rename.db` |
 | `MASTRA_STORAGE_AUTH_TOKEN` | No | `apps/mastra` | Preferred auth token for remote `libsql://` databases |
 | `PORT` | No | `apps/mastra` | Backend port, default `4111` |
-| `ALLOWED_ORIGIN` | No | `apps/mastra` | Recommended for deployed CORS; default behavior falls back to `*` if no origins are set |
-| `ALLOWED_ORIGIN_EU` | No | `apps/mastra` | Recommended for `https://app.eu.contentful.com` |
+| `ALLOWED_ORIGIN` | Yes in production | `apps/mastra` | Explicit Contentful app origin for credentialed CORS, for example `https://app.contentful.com` |
+| `ALLOWED_ORIGIN_EU` | Yes in production | `apps/mastra` | Explicit EU Contentful app origin, for example `https://app.eu.contentful.com` |
+| `APP_SESSION_SECRET` | Yes in production | `apps/mastra` | Signs the per-editor MCP session cookie |
+| `MCP_SESSION_ENCRYPTION_KEY` | Yes in production | `apps/mastra` | Encrypts persisted remote MCP OAuth/session state at rest |
+| `CONTENTFUL_MCP_SERVER_URL` | No | `apps/mastra` | Defaults to `https://mcp.contentful.com/mcp` |
+| `PUBLIC_APP_BASE_URL` | Recommended in deployed environments | `apps/mastra` | Public base URL used for Contentful MCP OAuth callback and client metadata routes |
 | `VITE_PORT` | No | `apps/contentful-app` | Frontend dev/preview port, default `3000` |
 | `VITE_DEV_SSL_KEY_PATH` | Yes for local frontend HTTPS | `apps/contentful-app`, `apps/mastra/scripts/httpsProxy.mjs` | Absolute path to local HTTPS key |
 | `VITE_DEV_SSL_CERT_PATH` | Yes for local frontend HTTPS | `apps/contentful-app`, `apps/mastra/scripts/httpsProxy.mjs` | Absolute path to local HTTPS cert |
@@ -431,6 +435,12 @@ That means a full release that touches both sides usually has two steps:
 
 Before testing a change that touches backend behavior, confirm the Mastra Cloud deployment has completed and that the configured `mastraBaseUrl` points at that updated deployment.
 
+If the release changes the remote MCP session flow, also verify that:
+
+1. the backend deployment exposes `/mcp/session`, `/mcp/connect/start`, `/mcp/connect/callback`, and `/mcp/environment-setup`
+2. `ALLOWED_ORIGIN`, `ALLOWED_ORIGIN_EU`, `APP_SESSION_SECRET`, and `MCP_SESSION_ENCRYPTION_KEY` are configured in the deployed backend environment
+3. the installer/admin enables the required upstream Contentful MCP categories for `content types`, `entries`, and `locales` as read-only in the target environment
+
 ### Storage modes
 
 The backend supports two deployment storage modes:
@@ -459,10 +469,11 @@ Implementation details worth knowing:
 - Vite is configured with `base: "./"` so hosted Contentful bundles use relative asset paths
 - the `functions/` directory is part of the uploaded app bundle
 - after upload, activate the new bundle in Contentful before retesting
+- the app config screen now includes remote MCP provider selection, app-level tool allow-listing, and an admin setup card for the current environment
 
 ### Backend deployment
 
-The expected production path is Mastra Cloud auto-deploy from git. Push the relevant commit/branch, wait for the cloud deployment to finish, and ensure it exposes `/health` plus `/chat/stream`.
+The expected production path is Mastra Cloud auto-deploy from git. Push the relevant commit/branch, wait for the cloud deployment to finish, and ensure it exposes `/health`, `/chat/stream`, and the `/mcp/*` routes used by the Contentful app.
 
 If you are doing a manual or local backend deployment instead, deploy the server from `apps/mastra` with the required environment variables and expose `/health` plus `/chat/stream`.
 
@@ -471,6 +482,7 @@ The backend currently uses:
 - Hono for HTTP routing
 - Mastra for agent execution and memory
 - local LibSQL file storage by default for development
+- encrypted LibSQL-backed session storage for remote Contentful MCP OAuth/session state
 
 #### Mastra Cloud managed storage
 

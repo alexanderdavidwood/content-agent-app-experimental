@@ -12,6 +12,7 @@ import {
 } from "@contentful/f36-ai-components";
 import {
   createChatDebugError,
+  type McpSessionStatus,
   parseChatDebugError,
   type AgentSurfaceContext,
   type AgentTraceData,
@@ -23,7 +24,12 @@ import {
 } from "@contentful-rename/shared";
 
 import { getAutoResumeClientToolDefinition } from "../../lib/clientToolRegistry";
-import { getInstallationParameters } from "../../lib/contentfulClient";
+import {
+  disconnectContentfulMcpSession,
+  fetchMcpSessionStatus,
+  getInstallationParameters,
+  startContentfulMcpAuthorization,
+} from "../../lib/contentfulClient";
 import {
   approveSafeChanges,
   buildReviewDraft,
@@ -116,6 +122,36 @@ function phaseForToolName(toolName: string | null) {
   }
 
   return getAutoResumeClientToolDefinition(toolName)?.phase ?? "error";
+}
+
+function mcpStateLabel(state: McpSessionStatus["state"]) {
+  switch (state) {
+    case "connected":
+      return "Connected";
+    case "expired":
+      return "Expired";
+    case "admin_setup_required":
+      return "Admin setup required";
+    case "error":
+      return "Error";
+    default:
+      return "Disconnected";
+  }
+}
+
+function mcpStateDescription(state: McpSessionStatus["state"]) {
+  switch (state) {
+    case "connected":
+      return "Read-only general content tools can use the remote Contentful MCP session.";
+    case "expired":
+      return "Reconnect Contentful MCP to continue using the remote read-only tools.";
+    case "admin_setup_required":
+      return "The session is connected, but the current environment is missing one or more required MCP tool categories.";
+    case "error":
+      return "The most recent MCP request failed. You can reconnect or fall back to the client SDK.";
+    default:
+      return "General content tools will fall back to the client SDK when the installation allows it.";
+  }
 }
 
 function stringifyForDisplay(value: unknown) {
@@ -997,6 +1033,11 @@ export default function ChatWorkspace({
   surfaceContext,
 }: ChatWorkspaceProps) {
   const parameters = getInstallationParameters(sdk);
+  const organizationId = sdk.ids?.organization;
+  const spaceId = sdk.ids?.space;
+  const environmentId = sdk.ids?.environmentAlias ?? sdk.ids?.environment ?? "master";
+  const contentfulUserId =
+    sdk.user?.sys?.id ?? sdk.user?.id ?? sdk.user?.spaceMembership?.sys?.id;
   const defaultLocale = sdk.locales?.default ?? "en-US";
   const timeZone =
     typeof Intl !== "undefined"
@@ -1011,9 +1052,16 @@ export default function ChatWorkspace({
       timeZone,
       currentDate,
       surfaceContext,
+      organizationId,
+      spaceId,
+      environmentId,
+      contentfulUserId,
       allowedContentTypes: parameters.allowedContentTypes,
       maxDiscoveryQueries: parameters.maxDiscoveryQueries,
       maxCandidatesPerRun: parameters.maxCandidatesPerRun,
+      contentOpsProvider: parameters.contentOpsProvider,
+      generalContentToolAvailability: parameters.generalContentToolAvailability,
+      mcpAutoFallbackToClientSdk: parameters.mcpAutoFallbackToClientSdk,
       toolAvailability: parameters.toolAvailability,
     },
     memory: chatMemory,
@@ -1025,9 +1073,16 @@ export default function ChatWorkspace({
       timeZone,
       currentDate,
       surfaceContext,
+      organizationId,
+      spaceId,
+      environmentId,
+      contentfulUserId,
       allowedContentTypes: parameters.allowedContentTypes,
       maxDiscoveryQueries: parameters.maxDiscoveryQueries,
       maxCandidatesPerRun: parameters.maxCandidatesPerRun,
+      contentOpsProvider: parameters.contentOpsProvider,
+      generalContentToolAvailability: parameters.generalContentToolAvailability,
+      mcpAutoFallbackToClientSdk: parameters.mcpAutoFallbackToClientSdk,
       toolAvailability: parameters.toolAvailability,
     },
     memory: chatMemory,
@@ -1051,6 +1106,14 @@ export default function ChatWorkspace({
     null,
   );
   const [clientActionRetryNonce, setClientActionRetryNonce] = useState(0);
+  const [mcpStatusRefreshNonce, setMcpStatusRefreshNonce] = useState(0);
+  const [mcpSessionStatus, setMcpSessionStatus] = useState<McpSessionStatus | null>(
+    null,
+  );
+  const [mcpStatusError, setMcpStatusError] = useState<string | null>(null);
+  const [mcpBusyAction, setMcpBusyAction] = useState<"connect" | "disconnect" | null>(
+    null,
+  );
   const autoResumingToolCallIdsRef = useRef<Set<string>>(new Set());
   const [isCompactLayout, setIsCompactLayout] = useState(() =>
     typeof window === "undefined" ? false : window.innerWidth < 1120,
@@ -1100,6 +1163,89 @@ export default function ChatWorkspace({
       setMessages([buildWelcomeMessage()]);
     }
   }, [messages.length, setMessages]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const run = async () => {
+      try {
+        const sessionStatus = await fetchMcpSessionStatus(baseUrlRef.current, {
+          provider: parameters.contentOpsProvider,
+          mcpAutoFallbackToClientSdk: parameters.mcpAutoFallbackToClientSdk,
+          generalContentToolAvailability: parameters.generalContentToolAvailability,
+          spaceId,
+          environmentId,
+          organizationId,
+          contentfulUserId,
+        });
+
+        if (!cancelled) {
+          setMcpSessionStatus(sessionStatus);
+          setMcpStatusError(null);
+        }
+      } catch (sessionError) {
+        if (!cancelled) {
+          setMcpStatusError(
+            sessionError instanceof Error
+              ? sessionError.message
+              : String(sessionError),
+          );
+        }
+      }
+    };
+
+    void run();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    contentfulUserId,
+    environmentId,
+    mcpStatusRefreshNonce,
+    organizationId,
+    parameters.contentOpsProvider,
+    parameters.generalContentToolAvailability.getContentType,
+    parameters.generalContentToolAvailability.getEntry,
+    parameters.generalContentToolAvailability.getLocales,
+    parameters.generalContentToolAvailability.listContentTypes,
+    parameters.generalContentToolAvailability.listEntries,
+    parameters.generalContentToolAvailability.publishEntry,
+    parameters.generalContentToolAvailability.updateEntry,
+    parameters.mastraBaseUrl,
+    parameters.mcpAutoFallbackToClientSdk,
+    spaceId,
+  ]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return undefined;
+    }
+
+    const onMessage = (event: MessageEvent) => {
+      const payload =
+        event.data && typeof event.data === "object"
+          ? (event.data as { type?: string; status?: string; message?: string })
+          : null;
+      if (payload?.type !== "contentful-mcp-connected") {
+        return;
+      }
+
+      if (payload.status === "connected") {
+        setMcpBusyAction(null);
+        setMcpStatusError(null);
+        setMcpStatusRefreshNonce((current) => current + 1);
+        return;
+      }
+
+      setMcpBusyAction(null);
+      setMcpStatusError(payload.message ?? "Contentful MCP connection failed.");
+      setMcpStatusRefreshNonce((current) => current + 1);
+    };
+
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, []);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -1257,11 +1403,76 @@ export default function ChatWorkspace({
     },
   };
 
+  async function handleConnectMcp() {
+    setMcpBusyAction("connect");
+    setMcpStatusError(null);
+
+    const popup =
+      typeof window !== "undefined"
+        ? window.open("", "contentful-mcp-connect", "width=640,height=820")
+        : null;
+
+    try {
+      const result = await startContentfulMcpAuthorization(baseUrlRef.current, {
+        provider: parameters.contentOpsProvider,
+        spaceId,
+        environmentId,
+        organizationId,
+        contentfulUserId,
+      });
+
+      if (popup) {
+        popup.location.href = result.redirectUrl;
+        popup.focus();
+      } else if (typeof window !== "undefined") {
+        window.open(result.redirectUrl, "_blank", "noopener,noreferrer");
+      }
+    } catch (connectError) {
+      popup?.close();
+      setMcpBusyAction(null);
+      setMcpStatusError(
+        connectError instanceof Error ? connectError.message : String(connectError),
+      );
+    }
+  }
+
+  async function handleDisconnectMcp() {
+    setMcpBusyAction("disconnect");
+    setMcpStatusError(null);
+
+    try {
+      const status = await disconnectContentfulMcpSession(baseUrlRef.current, {
+        provider: parameters.contentOpsProvider,
+        mcpAutoFallbackToClientSdk: parameters.mcpAutoFallbackToClientSdk,
+        generalContentToolAvailability: parameters.generalContentToolAvailability,
+        spaceId,
+        environmentId,
+        organizationId,
+        contentfulUserId,
+      });
+      setMcpSessionStatus(status);
+      setMcpStatusRefreshNonce((current) => current + 1);
+    } catch (disconnectError) {
+      setMcpStatusError(
+        disconnectError instanceof Error
+          ? disconnectError.message
+          : String(disconnectError),
+      );
+    } finally {
+      setMcpBusyAction(null);
+    }
+  }
+
+  const effectiveMcpStatus = mcpSessionStatus;
+
   const rightRail = (
     <AIChatSidePanel title="Chat details">
       <AIChatHistory>
         <p style={{ margin: 0 }}>Locale: {defaultLocale}</p>
         <p style={{ margin: 0 }}>Surface: {surfaceContext.surface}</p>
+        <p style={{ margin: 0 }}>
+          Content provider: {parameters.contentOpsProvider}
+        </p>
         <p style={{ margin: 0 }}>
           Semantic search:{" "}
           {parameters.toolAvailability.semanticSearch ? "enabled" : "disabled"}
@@ -1285,6 +1496,52 @@ export default function ChatWorkspace({
             : status}
         </p>
       </AIChatHistory>
+      <AIChatArtifactMessage title="Contentful MCP">
+        <div style={{ display: "grid", gap: 10 }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <StatusBadge
+              label={mcpStateLabel(effectiveMcpStatus?.state ?? "disconnected")}
+              state={
+                effectiveMcpStatus?.state === "connected"
+                  ? "output-available"
+                  : effectiveMcpStatus?.state === "admin_setup_required"
+                    ? "input-available"
+                    : "output-error"
+              }
+            />
+            <span style={{ fontSize: 12, color: "#52525b" }}>
+              {mcpStateDescription(effectiveMcpStatus?.state ?? "disconnected")}
+            </span>
+          </div>
+          {effectiveMcpStatus?.lastError ? (
+            <p style={{ margin: 0, color: "#991b1b" }}>
+              {effectiveMcpStatus.lastError}
+            </p>
+          ) : null}
+          {mcpStatusError ? (
+            <p style={{ margin: 0, color: "#991b1b" }}>{mcpStatusError}</p>
+          ) : null}
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button
+              type="button"
+              onClick={() => void handleConnectMcp()}
+              disabled={
+                mcpBusyAction !== null ||
+                parameters.contentOpsProvider === "client-sdk"
+              }
+            >
+              {mcpBusyAction === "connect" ? "Connecting..." : "Connect Contentful MCP"}
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleDisconnectMcp()}
+              disabled={mcpBusyAction !== null || !effectiveMcpStatus?.sessionId}
+            >
+              {mcpBusyAction === "disconnect" ? "Disconnecting..." : "Disconnect MCP"}
+            </button>
+          </div>
+        </div>
+      </AIChatArtifactMessage>
       {pendingReview ? (
         <AIChatArtifactMessage title="Review pending">
           <p style={{ margin: 0 }}>

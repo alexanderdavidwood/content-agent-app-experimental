@@ -223,7 +223,7 @@ function buildHeuristicFilters(
 export const extractSearchFiltersTool = createTool({
   id: "extract-search-filters",
   description:
-    "Convert a free-form Contentful search request into structured entry search filters. Use this before searchEntriesClient.",
+    "Convert a free-form Contentful search request into structured entry search filters. Use this before listEntries.",
   inputSchema: extractSearchFiltersToolInputSchema,
   outputSchema: extractSearchFiltersToolOutputSchema,
   requestContextSchema: chatExecutionContextSchema,

@@ -22,7 +22,10 @@ async function fetchWithPreflight(
   baseUrl: BaseUrlResolver,
 ) {
   try {
-    return await fetch(input, init);
+    return await fetch(input, {
+      ...init,
+      credentials: "include",
+    });
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
       throw error;
@@ -62,6 +65,7 @@ export function createRenameChatTransport(
         getBaseUrl(),
         headers as Record<string, string>,
       ),
+      credentials: "include",
       body: {
         ...body,
         id,
@@ -77,6 +81,7 @@ export function createRenameChatTransport(
         getBaseUrl(),
         headers as Record<string, string>,
       ),
+      credentials: "include",
     }),
   });
 }

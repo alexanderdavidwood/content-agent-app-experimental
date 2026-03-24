@@ -2,18 +2,34 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createRenameChatTransport } from "./chatTransport";
+import type { RenameChatRequestBody } from "./chatTypes";
 
 const textEncoder = new TextEncoder();
 
-function createContext() {
+function createContext(): RenameChatRequestBody {
   return {
     requestContext: {
       defaultLocale: "en-US",
       timeZone: "UTC",
       currentDate: "2026-03-22",
+      organizationId: "org-1",
+      spaceId: "space-1",
+      environmentId: "master",
+      contentfulUserId: "user-1",
       allowedContentTypes: [],
       maxDiscoveryQueries: 5,
       maxCandidatesPerRun: 30,
+      contentOpsProvider: "hybrid",
+      generalContentToolAvailability: {
+        listContentTypes: true,
+        getContentType: true,
+        listEntries: true,
+        getEntry: true,
+        getLocales: true,
+        updateEntry: false,
+        publishEntry: false,
+      },
+      mcpAutoFallbackToClientSdk: true,
       toolAvailability: {
         semanticSearch: true,
         entrySearch: true,
@@ -65,10 +81,12 @@ async function sendViaTransport(
 test("createRenameChatTransport resolves the backend URL from the latest getter value", async () => {
   let baseUrl = "https://first.example.com";
   const seenUrls: string[] = [];
+  const seenCredentials: Array<RequestCredentials | undefined> = [];
   const originalFetch = globalThis.fetch;
 
-  globalThis.fetch = (async (input) => {
+  globalThis.fetch = (async (input, init) => {
     seenUrls.push(String(input));
+    seenCredentials.push(init?.credentials);
     return createEventStreamResponse();
   }) as typeof fetch;
 
@@ -86,6 +104,7 @@ test("createRenameChatTransport resolves the backend URL from the latest getter 
     "https://first.example.com/chat/stream",
     "https://second.example.com/chat/stream",
   ]);
+  assert.deepEqual(seenCredentials, ["include", "include"]);
 });
 
 test("createRenameChatTransport surfaces backend preflight guidance after a fetch failure", async () => {

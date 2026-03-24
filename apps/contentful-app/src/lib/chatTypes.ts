@@ -11,12 +11,18 @@ import type {
   DraftProposalsToolOutput,
   ExtractSearchFiltersToolInput,
   ExtractSearchFiltersToolOutput,
+  GetContentTypeToolInput,
+  GetContentTypeToolOutput,
+  GetEntryToolInput,
+  GetEntryToolOutput,
   GetEntryDetailsToolInput,
   GetEntryDetailsToolOutput,
   GetLocalesToolInput,
   GetLocalesToolOutput,
   ListContentTypesToolInput,
   ListContentTypesToolOutput,
+  ListEntriesToolInput,
+  ListEntriesToolOutput,
   ReadEntriesToolInput,
   ReadEntriesToolOutput,
   ReviewProposalsToolInput,
@@ -68,6 +74,26 @@ export type RenameChatDataParts = {
 };
 
 export type RenameChatTools = {
+  listContentTypes: {
+    input: ListContentTypesToolInput;
+    output: ListContentTypesToolOutput;
+  };
+  getContentType: {
+    input: GetContentTypeToolInput;
+    output: GetContentTypeToolOutput;
+  };
+  listEntries: {
+    input: ListEntriesToolInput;
+    output: ListEntriesToolOutput;
+  };
+  getEntry: {
+    input: GetEntryToolInput;
+    output: GetEntryToolOutput;
+  };
+  getLocales: {
+    input: GetLocalesToolInput;
+    output: GetLocalesToolOutput;
+  };
   listContentTypesClient: {
     input: ListContentTypesToolInput;
     output: ListContentTypesToolOutput;

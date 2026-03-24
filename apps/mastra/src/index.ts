@@ -1,13 +1,7 @@
 import { Mastra } from "@mastra/core";
-import { registerApiRoute } from "@mastra/core/server";
 import { LibSQLStore } from "@mastra/libsql";
-import {
-  createChatDebugError,
-  serializeChatDebugError,
-} from "@contentful-rename/shared";
 
 import { renameAgent } from "./agents/renameAgent";
-import { createChatStreamResponse } from "./routes/chatStreamResponse";
 
 function envFlag(value: string | undefined) {
   return /^(1|true|yes|on)$/i.test(value?.trim() ?? "");
@@ -56,35 +50,5 @@ export const mastra = new Mastra({
   ...(storage ? { storage } : {}),
   agents: {
     renameAgent,
-  },
-  server: {
-    apiRoutes: [
-      registerApiRoute("/chat/stream", {
-        method: "POST",
-        requiresAuth: false,
-        handler: async (c) => {
-          try {
-            return await createChatStreamResponse(
-              c.get("mastra"),
-              await c.req.json().catch(() => ({})),
-              c.req.raw.signal,
-            );
-          } catch (error) {
-            return c.text(
-              serializeChatDebugError(
-                createChatDebugError(error, {
-                  code: "chat_stream_failed",
-                  phase: "error",
-                  details: {
-                    route: "/chat/stream",
-                  },
-                }),
-              ),
-              500,
-            );
-          }
-        },
-      }),
-    ],
   },
 });

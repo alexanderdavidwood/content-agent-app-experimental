@@ -14,11 +14,19 @@ import type {
   DiscoverCandidatesToolInput,
   DiscoverCandidatesToolOutput,
   EntrySearchFilters,
+  GetContentTypeToolInput,
+  GetContentTypeToolOutput,
+  GetEntryToolInput,
+  GetEntryToolOutput,
   GetEntryDetailsToolInput,
   GetEntryDetailsToolOutput,
   GetLocalesToolOutput,
   ListContentTypesToolInput,
   ListContentTypesToolOutput,
+  ListEntriesToolInput,
+  ListEntriesToolOutput,
+  McpEnvironmentSetupStatus,
+  McpSessionStatus,
   ProposedChange,
   ReadEntriesToolInput,
   ReadEntriesToolOutput,
@@ -38,9 +46,14 @@ import {
   CONTENTFUL_SUPPORTED_FIELD_TYPES,
   appInstallationParametersSchema,
   extractRichTextSegments,
+  getContentTypeToolOutputSchema,
+  getEntryToolOutputSchema,
   getEntryDetailsToolOutputSchema,
   getLocalesToolOutputSchema,
   listContentTypesToolOutputSchema,
+  listEntriesToolOutputSchema,
+  mcpEnvironmentSetupStatusSchema,
+  mcpSessionStatusSchema,
   readEntriesToolOutputSchema,
   searchEntriesToolOutputSchema,
   updateEntryAndPublishToolOutputSchema,
@@ -169,6 +182,17 @@ const DEFAULT_INSTALLATION_PARAMETERS = {
   maxDiscoveryQueries: 5,
   maxCandidatesPerRun: 30,
   defaultDryRun: true,
+  contentOpsProvider: "hybrid",
+  generalContentToolAvailability: {
+    listContentTypes: true,
+    getContentType: true,
+    listEntries: true,
+    getEntry: true,
+    getLocales: true,
+    updateEntry: false,
+    publishEntry: false,
+  },
+  mcpAutoFallbackToClientSdk: true,
   toolAvailability: {
     semanticSearch: true,
     entrySearch: true,
@@ -430,6 +454,29 @@ export async function listContentTypes(
   });
 }
 
+export async function getContentType(
+  sdk: SdkLike,
+  input: GetContentTypeToolInput,
+  cmaOverride?: CmaClientLike,
+): Promise<GetContentTypeToolOutput> {
+  const result = await listContentTypes(
+    sdk,
+    {
+      contentTypeIds: [input.contentTypeId],
+      includeFields: input.includeFields,
+      limit: 1,
+    },
+    cmaOverride,
+  );
+
+  const contentType = result.contentTypes[0];
+  if (!contentType) {
+    throw new Error(`Content type "${input.contentTypeId}" was not found.`);
+  }
+
+  return getContentTypeToolOutputSchema.parse(contentType);
+}
+
 export async function getEntryDetailsWithContentType(
   sdk: SdkLike,
   input: GetEntryDetailsToolInput,
@@ -446,6 +493,16 @@ export async function getEntryDetailsWithContentType(
     contentType: toContentTypeSummary(contentType, input.includeContentTypeFields),
     locale: input.locale,
   });
+}
+
+export async function getEntry(
+  sdk: SdkLike,
+  input: GetEntryToolInput,
+  cmaOverride?: CmaClientLike,
+): Promise<GetEntryToolOutput> {
+  return getEntryToolOutputSchema.parse(
+    await getEntryDetailsWithContentType(sdk, input, cmaOverride),
+  );
 }
 
 export async function readEntries(
@@ -1101,6 +1158,18 @@ export async function searchEntries(
   });
 }
 
+export async function listEntries(
+  sdk: SdkLike,
+  input: ListEntriesToolInput,
+  options: {
+    defaultLocale: string;
+  },
+): Promise<ListEntriesToolOutput> {
+  return listEntriesToolOutputSchema.parse(
+    await searchEntries(sdk, input, options),
+  );
+}
+
 export async function validateApprovedChanges(
   sdk: SdkLike,
   toolInput: ValidateApprovedChangesToolInput,
@@ -1536,6 +1605,161 @@ export async function preflightMastraBackend(
   } finally {
     clearTimeout(timeout);
   }
+}
+
+type McpStatusRequest = {
+  provider: "client-sdk" | "remote-mcp" | "hybrid";
+  mcpAutoFallbackToClientSdk: boolean;
+  generalContentToolAvailability: {
+    listContentTypes: boolean;
+    getContentType: boolean;
+    listEntries: boolean;
+    getEntry: boolean;
+    getLocales: boolean;
+    updateEntry: boolean;
+    publishEntry: boolean;
+  };
+  spaceId?: string;
+  environmentId?: string;
+  organizationId?: string;
+  contentfulUserId?: string;
+};
+
+type McpConnectStartRequest = {
+  provider: "client-sdk" | "remote-mcp" | "hybrid";
+  spaceId?: string;
+  environmentId?: string;
+  organizationId?: string;
+  contentfulUserId?: string;
+};
+
+function buildMcpStatusUrl(
+  baseUrl: string,
+  path: string,
+  request: McpStatusRequest,
+) {
+  const url = new URL(path, baseUrl);
+  url.searchParams.set("provider", request.provider);
+  url.searchParams.set(
+    "mcpAutoFallbackToClientSdk",
+    String(request.mcpAutoFallbackToClientSdk),
+  );
+
+  if (request.spaceId) {
+    url.searchParams.set("spaceId", request.spaceId);
+  }
+  if (request.environmentId) {
+    url.searchParams.set("environmentId", request.environmentId);
+  }
+  if (request.organizationId) {
+    url.searchParams.set("organizationId", request.organizationId);
+  }
+  if (request.contentfulUserId) {
+    url.searchParams.set("contentfulUserId", request.contentfulUserId);
+  }
+
+  for (const [key, value] of Object.entries(request.generalContentToolAvailability)) {
+    url.searchParams.set(key, String(value));
+  }
+
+  return url.toString();
+}
+
+export async function fetchMcpSessionStatus(
+  baseUrl: string,
+  request: McpStatusRequest,
+): Promise<McpSessionStatus> {
+  const response = await fetch(buildMcpStatusUrl(baseUrl, "/mcp/session", request), {
+    method: "GET",
+    credentials: "include",
+    headers: buildMastraRequestHeaders(baseUrl, {
+      Accept: "application/json",
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to load MCP session status (${response.status}).`);
+  }
+
+  return mcpSessionStatusSchema.parse(await response.json());
+}
+
+export async function fetchMcpEnvironmentSetupStatus(
+  baseUrl: string,
+  request: McpStatusRequest,
+): Promise<McpEnvironmentSetupStatus> {
+  const response = await fetch(
+    buildMcpStatusUrl(baseUrl, "/mcp/environment-setup", request),
+    {
+      method: "GET",
+      credentials: "include",
+      headers: buildMastraRequestHeaders(baseUrl, {
+        Accept: "application/json",
+      }),
+    },
+  );
+
+  if (!response.ok) {
+    throw new Error(
+      `Failed to load MCP environment setup status (${response.status}).`,
+    );
+  }
+
+  return mcpEnvironmentSetupStatusSchema.parse(await response.json());
+}
+
+export async function startContentfulMcpAuthorization(
+  baseUrl: string,
+  request: McpConnectStartRequest,
+): Promise<{
+  sessionId: string;
+  redirectUrl: string;
+}> {
+  const response = await fetch(new URL("/mcp/connect/start", baseUrl).toString(), {
+    method: "POST",
+    credentials: "include",
+    headers: buildMastraRequestHeaders(baseUrl, {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    }),
+    body: JSON.stringify(request),
+  });
+
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    throw new Error(
+      `Failed to start Contentful MCP authorization (${response.status}): ${detail || response.statusText}`,
+    );
+  }
+
+  const payload = (await response.json()) as {
+    sessionId: string;
+    redirectUrl: string;
+  };
+
+  return payload;
+}
+
+export async function disconnectContentfulMcpSession(
+  baseUrl: string,
+  request: McpStatusRequest,
+): Promise<McpSessionStatus> {
+  const response = await fetch(
+    buildMcpStatusUrl(baseUrl, "/mcp/disconnect", request),
+    {
+      method: "POST",
+      credentials: "include",
+      headers: buildMastraRequestHeaders(baseUrl, {
+        Accept: "application/json",
+      }),
+    },
+  );
+
+  if (!response.ok) {
+    throw new Error(`Failed to disconnect Contentful MCP (${response.status}).`);
+  }
+
+  return mcpSessionStatusSchema.parse(await response.json());
 }
 
 export async function fallbackKeywordSearch(

@@ -2,23 +2,30 @@ import { createTool } from "@mastra/core/tools";
 import {
   chatExecutionContextSchema,
   createChatDebugError,
-  getEntryDetailsToolInputSchema,
-  getEntryDetailsToolOutputSchema,
+  getContentTypeToolInputSchema,
+  getContentTypeToolOutputSchema,
+  getEntryToolInputSchema,
+  getEntryToolOutputSchema,
   getLocalesToolInputSchema,
   getLocalesToolOutputSchema,
   listContentTypesToolInputSchema,
   listContentTypesToolOutputSchema,
+  listEntriesToolInputSchema,
+  listEntriesToolOutputSchema,
   readEntriesToolInputSchema,
   readEntriesToolOutputSchema,
-  searchEntriesToolInputSchema,
-  searchEntriesToolOutputSchema,
   serializeChatDebugError,
   updateEntryAndPublishToolInputSchema,
   updateEntryAndPublishToolOutputSchema,
 } from "@contentful-rename/shared";
+import type { ZodTypeAny } from "zod";
 import { z } from "zod";
 
-const getEntryDetailsRequestSchema = z.object({
+import { executeRemoteGeneralContentTool } from "../lib/contentGateway/remoteMcpGateway";
+import { resolveGeneralContentToolExecution } from "../lib/contentGateway/resolveGeneralContentToolExecution";
+import type { GeneralContentToolName } from "../lib/contentGateway/types";
+
+const getEntryRequestSchema = z.object({
   entryId: z.string().min(1),
   locale: z.string().min(1).optional(),
   includeContentTypeFields: z.boolean().default(true),
@@ -45,67 +52,198 @@ function missingAgentError(message: string, phase: string, toolName: string) {
   );
 }
 
-export const listContentTypesClientTool = createTool({
-  id: "list-content-types-client",
-  description:
-    "List Contentful content types or inspect specific content type ids using the current app session.",
-  inputSchema: listContentTypesToolInputSchema,
-  outputSchema: listContentTypesToolOutputSchema,
-  suspendSchema: listContentTypesToolInputSchema,
-  resumeSchema: listContentTypesToolOutputSchema,
-  requestContextSchema: chatExecutionContextSchema,
-  execute: async (inputData, context) => {
-    if (!context.agent) {
-      throw missingAgentError(
-        "Agent context is required for listing content types.",
-        "listing-content-types",
-        "listContentTypesClient",
-      );
-    }
+function disabledToolError(toolName: string, phase: string, message: string) {
+  return new Error(
+    serializeChatDebugError(
+      createChatDebugError(new Error(message), {
+        code: "tool_disabled",
+        phase: phase as any,
+        toolName,
+      }),
+    ),
+  );
+}
 
-    if (!context.agent.resumeData) {
-      await context.agent.suspend(listContentTypesToolInputSchema.parse(inputData));
-      return undefined as never;
-    }
+function clientFallbackInputError(toolName: string, phase: string, message: string) {
+  return new Error(
+    serializeChatDebugError(
+      createChatDebugError(new Error(message), {
+        code: "mcp_session_unavailable",
+        phase: phase as any,
+        toolName,
+      }),
+    ),
+  );
+}
 
-    return listContentTypesToolOutputSchema.parse(context.agent.resumeData);
-  },
-});
+function buildHybridGeneralContentTool<
+  Name extends GeneralContentToolName,
+  RequestInput,
+>({
+  id,
+  toolName,
+  phase,
+  description,
+  requestSchema,
+  suspendSchema,
+  outputSchema,
+  prepareSuspendInput,
+  prepareRemoteInput,
+}: {
+  id: string;
+  toolName: Name;
+  phase: string;
+  description: string;
+  requestSchema: ZodTypeAny;
+  suspendSchema: ZodTypeAny;
+  outputSchema: ZodTypeAny;
+  prepareSuspendInput: (
+    input: RequestInput,
+    chatContext: ReturnType<typeof getChatContext>,
+  ) => Record<string, unknown>;
+  prepareRemoteInput?: (
+    input: RequestInput,
+    chatContext: ReturnType<typeof getChatContext>,
+  ) => Record<string, unknown>;
+}) {
+  return createTool({
+    id,
+    description,
+    inputSchema: requestSchema,
+    outputSchema,
+    suspendSchema,
+    resumeSchema: outputSchema,
+    requestContextSchema: chatExecutionContextSchema,
+    execute: async (inputData, context) => {
+      if (context.agent?.resumeData) {
+        return outputSchema.parse(context.agent.resumeData);
+      }
 
-export const getEntryDetailsClientTool = createTool({
-  id: "get-entry-details-client",
-  description:
-    "Load a specific Contentful entry together with its content type metadata using the current app session.",
-  inputSchema: getEntryDetailsRequestSchema,
-  outputSchema: getEntryDetailsToolOutputSchema,
-  suspendSchema: getEntryDetailsToolInputSchema,
-  resumeSchema: getEntryDetailsToolOutputSchema,
-  requestContextSchema: chatExecutionContextSchema,
-  execute: async (inputData, context) => {
-    if (!context.agent) {
-      throw missingAgentError(
-        "Agent context is required for loading entry details.",
-        "loading-entry-details",
-        "getEntryDetailsClient",
-      );
-    }
-
-    if (!context.agent.resumeData) {
       const chatContext = getChatContext(context);
+      const requestInput = requestSchema.parse(inputData) as RequestInput;
+      let decision;
 
-      await context.agent.suspend(
-        getEntryDetailsToolInputSchema.parse({
-          entryId: inputData.entryId,
-          locale: inputData.locale ?? chatContext.defaultLocale,
-          includeContentTypeFields: inputData.includeContentTypeFields,
-        }),
-      );
+      try {
+        decision = resolveGeneralContentToolExecution(toolName, chatContext);
+      } catch (error) {
+        throw disabledToolError(
+          toolName,
+          phase,
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+
+      const preparedSuspendInput = prepareSuspendInput(requestInput, chatContext);
+      const preparedRemoteInput = prepareRemoteInput
+        ? prepareRemoteInput(requestInput, chatContext)
+        : preparedSuspendInput;
+
+      if (decision.mode === "remote-mcp") {
+        const sessionId = decision.sessionStatus?.sessionId;
+        if (!sessionId) {
+          throw clientFallbackInputError(
+            toolName,
+            phase,
+            "Remote MCP mode was selected but no session id is available.",
+          );
+        }
+
+        return outputSchema.parse(
+          await executeRemoteGeneralContentTool(
+            toolName,
+            preparedRemoteInput,
+            chatContext,
+            sessionId,
+          ),
+        );
+      }
+
+      if (!context.agent) {
+        throw missingAgentError(
+          "Agent context is required for client SDK fallback.",
+          phase,
+          toolName,
+        );
+      }
+
+      await context.agent.suspend(suspendSchema.parse(preparedSuspendInput));
       return undefined as never;
-    }
+    },
+  });
+}
 
-    return getEntryDetailsToolOutputSchema.parse(context.agent.resumeData);
+export const listContentTypesTool = buildHybridGeneralContentTool({
+  id: "list-content-types",
+  toolName: "listContentTypes",
+  phase: "listing-content-types",
+  description:
+    "List Contentful content types, using remote Contentful MCP when available and falling back to the current app session when needed.",
+  requestSchema: listContentTypesToolInputSchema,
+  suspendSchema: listContentTypesToolInputSchema,
+  outputSchema: listContentTypesToolOutputSchema,
+  prepareSuspendInput: (input) => listContentTypesToolInputSchema.parse(input),
+});
+
+export const getContentTypeTool = buildHybridGeneralContentTool({
+  id: "get-content-type",
+  toolName: "getContentType",
+  phase: "loading-content-type",
+  description:
+    "Load one specific Contentful content type, preferring remote Contentful MCP and falling back to the current app session when needed.",
+  requestSchema: getContentTypeToolInputSchema,
+  suspendSchema: getContentTypeToolInputSchema,
+  outputSchema: getContentTypeToolOutputSchema,
+  prepareSuspendInput: (input) => getContentTypeToolInputSchema.parse(input),
+});
+
+export const listEntriesTool = buildHybridGeneralContentTool({
+  id: "list-entries",
+  toolName: "listEntries",
+  phase: "searching-entries",
+  description:
+    "List Contentful entries using structured filters, preferring remote Contentful MCP and falling back to the current app session when needed.",
+  requestSchema: listEntriesToolInputSchema,
+  suspendSchema: listEntriesToolInputSchema,
+  outputSchema: listEntriesToolOutputSchema,
+  prepareSuspendInput: (input) => listEntriesToolInputSchema.parse(input),
+});
+
+export const getEntryTool = buildHybridGeneralContentTool({
+  id: "get-entry",
+  toolName: "getEntry",
+  phase: "loading-entry-details",
+  description:
+    "Load a specific Contentful entry and its content type metadata, preferring remote Contentful MCP and falling back to the current app session when needed.",
+  requestSchema: getEntryRequestSchema,
+  suspendSchema: getEntryToolInputSchema,
+  outputSchema: getEntryToolOutputSchema,
+  prepareSuspendInput: (input, chatContext) => {
+    const parsed = getEntryRequestSchema.parse(input);
+    return getEntryToolInputSchema.parse({
+      entryId: parsed.entryId,
+      locale: parsed.locale ?? chatContext.defaultLocale,
+      includeContentTypeFields: parsed.includeContentTypeFields,
+    });
   },
 });
+
+export const getLocalesTool = buildHybridGeneralContentTool({
+  id: "get-locales",
+  toolName: "getLocales",
+  phase: "listing-locales",
+  description:
+    "List Contentful locales, preferring remote Contentful MCP and falling back to the current app session when needed.",
+  requestSchema: getLocalesToolInputSchema,
+  suspendSchema: getLocalesToolInputSchema,
+  outputSchema: getLocalesToolOutputSchema,
+  prepareSuspendInput: (input) => getLocalesToolInputSchema.parse(input),
+});
+
+// Legacy suspended client tools stay available for compatibility with older traces and tests.
+export const listContentTypesClientTool = listContentTypesTool;
+export const getEntryDetailsClientTool = getEntryTool;
+export const getLocalesClientTool = getLocalesTool;
+export const searchEntriesClientTool = listEntriesTool;
 
 export const readEntriesClientTool = createTool({
   id: "read-entries-client",
@@ -125,92 +263,24 @@ export const readEntriesClientTool = createTool({
       );
     }
 
-    if (!context.agent.resumeData) {
-      const chatContext = getChatContext(context);
-
-      await context.agent.suspend(
-        readEntriesToolInputSchema.parse({
-          entryIds: inputData.entryIds,
-          locales:
-            inputData.locales && inputData.locales.length > 0
-              ? inputData.locales
-              : [chatContext.defaultLocale],
-        }),
-      );
-      return undefined as never;
+    if (context.agent.resumeData) {
+      return readEntriesToolOutputSchema.parse(context.agent.resumeData);
     }
 
-    return readEntriesToolOutputSchema.parse(context.agent.resumeData);
-  },
-});
+    const chatContext = getChatContext(context);
+    const parsed = readEntriesRequestSchema.parse(inputData);
 
-export const getLocalesClientTool = createTool({
-  id: "get-locales-client",
-  description:
-    "List Contentful locales using the current app session.",
-  inputSchema: getLocalesToolInputSchema,
-  outputSchema: getLocalesToolOutputSchema,
-  suspendSchema: getLocalesToolInputSchema,
-  resumeSchema: getLocalesToolOutputSchema,
-  requestContextSchema: chatExecutionContextSchema,
-  execute: async (inputData, context) => {
-    if (!context.agent) {
-      throw missingAgentError(
-        "Agent context is required for listing locales.",
-        "listing-locales",
-        "getLocalesClient",
-      );
-    }
+    await context.agent.suspend(
+      readEntriesToolInputSchema.parse({
+        entryIds: parsed.entryIds,
+        locales:
+          parsed.locales && parsed.locales.length > 0
+            ? parsed.locales
+            : [chatContext.defaultLocale],
+      }),
+    );
 
-    if (!context.agent.resumeData) {
-      await context.agent.suspend(getLocalesToolInputSchema.parse(inputData));
-      return undefined as never;
-    }
-
-    return getLocalesToolOutputSchema.parse(context.agent.resumeData);
-  },
-});
-
-export const searchEntriesClientTool = createTool({
-  id: "search-entries-client",
-  description:
-    "Search Contentful entries using structured filters and the current app session. Use this only after filters are already structured.",
-  inputSchema: searchEntriesToolInputSchema,
-  outputSchema: searchEntriesToolOutputSchema,
-  suspendSchema: searchEntriesToolInputSchema,
-  resumeSchema: searchEntriesToolOutputSchema,
-  requestContextSchema: chatExecutionContextSchema,
-  execute: async (inputData, context) => {
-    if (!context.agent) {
-      throw missingAgentError(
-        "Agent context is required for entry search.",
-        "searching-entries",
-        "searchEntriesClient",
-      );
-    }
-
-    if (!context.agent.resumeData) {
-      const chatContext = getChatContext(context);
-      if (!chatContext.toolAvailability.entrySearch) {
-        throw new Error(
-          serializeChatDebugError(
-            createChatDebugError(
-              new Error("Entry search is disabled in the current app configuration."),
-              {
-                code: "entry_search_disabled",
-                phase: "searching-entries",
-                toolName: "searchEntriesClient",
-              },
-            ),
-          ),
-        );
-      }
-
-      await context.agent.suspend(searchEntriesToolInputSchema.parse(inputData));
-      return undefined as never;
-    }
-
-    return searchEntriesToolOutputSchema.parse(context.agent.resumeData);
+    return undefined as never;
   },
 });
 

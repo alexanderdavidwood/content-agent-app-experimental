@@ -26,9 +26,24 @@ const chatContext: ChatExecutionContext = {
   timeZone: "UTC",
   currentDate: "2026-03-22",
   surfaceContext: { surface: "page" },
+  organizationId: "org-1",
+  spaceId: "space-1",
+  environmentId: "master",
+  contentfulUserId: "user-1",
   allowedContentTypes: ["landingPage"],
   maxDiscoveryQueries: 5,
   maxCandidatesPerRun: 30,
+  contentOpsProvider: "hybrid",
+  generalContentToolAvailability: {
+    listContentTypes: true,
+    getContentType: true,
+    listEntries: true,
+    getEntry: true,
+    getLocales: true,
+    updateEntry: false,
+    publishEntry: false,
+  },
+  mcpAutoFallbackToClientSdk: true,
   toolAvailability: {
     semanticSearch: true,
     entrySearch: true,
@@ -42,9 +57,22 @@ function createRequestContext() {
   requestContext.set("timeZone", chatContext.timeZone);
   requestContext.set("currentDate", chatContext.currentDate);
   requestContext.set("surfaceContext", chatContext.surfaceContext);
+  requestContext.set("organizationId", chatContext.organizationId);
+  requestContext.set("spaceId", chatContext.spaceId);
+  requestContext.set("environmentId", chatContext.environmentId);
+  requestContext.set("contentfulUserId", chatContext.contentfulUserId);
   requestContext.set("allowedContentTypes", chatContext.allowedContentTypes);
   requestContext.set("maxDiscoveryQueries", chatContext.maxDiscoveryQueries);
   requestContext.set("maxCandidatesPerRun", chatContext.maxCandidatesPerRun);
+  requestContext.set("contentOpsProvider", chatContext.contentOpsProvider);
+  requestContext.set(
+    "generalContentToolAvailability",
+    chatContext.generalContentToolAvailability,
+  );
+  requestContext.set(
+    "mcpAutoFallbackToClientSdk",
+    chatContext.mcpAutoFallbackToClientSdk,
+  );
   requestContext.set("toolAvailability", chatContext.toolAvailability);
   return requestContext;
 }

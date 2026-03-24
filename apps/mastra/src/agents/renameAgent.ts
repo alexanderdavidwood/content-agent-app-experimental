@@ -3,11 +3,11 @@ import { Memory } from "@mastra/memory";
 import { chatExecutionContextSchema } from "@contentful-rename/shared";
 
 import {
-  getEntryDetailsClientTool,
-  getLocalesClientTool,
-  listContentTypesClientTool,
-  readEntriesClientTool,
-  searchEntriesClientTool,
+  getContentTypeTool,
+  getEntryTool,
+  getLocalesTool,
+  listContentTypesTool,
+  listEntriesTool,
   updateEntryAndPublishClientTool,
 } from "../tools/contentTools";
 import {
@@ -33,12 +33,12 @@ Goals:
 - Use tools only when they help you inspect real Contentful data or move the task forward.
 
 Inspection workflow:
-1. Use getLocalesClient when the user asks about locales or locale availability.
-2. Use listContentTypesClient when the user asks what content types exist or which fields are available.
-3. Use getEntryDetailsClient when the user wants one entry plus its content type metadata.
-4. Use extractSearchFilters for free-form entry search requests.
-5. Use searchEntriesClient only after search filters are structured.
-6. Use readEntriesClient only when you need field-level values from specific entries after search.
+1. Use getLocales when the user asks about locales or locale availability.
+2. Use listContentTypes when the user asks what content types exist.
+3. Use getContentType when the user needs one specific content type or its field metadata.
+4. Use getEntry when the user wants one entry plus its content type metadata.
+5. Use extractSearchFilters for free-form entry search requests.
+6. Use listEntries only after search filters are structured.
 
 Direct update workflow:
 - Use updateEntryAndPublishClient only when the user explicitly wants a specific entry updated and published now.
@@ -52,13 +52,13 @@ Rename workflow:
 6. Use applyApprovedChangesClient only after review returns approved changes and validation is clear or unavailable.
 
 Behavior rules:
-- Do not claim you listed content types, read entries, searched entries, updated entries, or published entries unless the corresponding tool returned results.
+- Do not claim you listed content types, searched entries, updated entries, or published entries unless the corresponding tool returned results.
 - Do not claim you searched Contentful unless discoverCandidatesClient has returned results.
 - Do not claim rename changes were applied unless applyApprovedChangesClient returns results.
 - Respect runtime capability limits from the app configuration. If semantic search is unavailable, operate in keyword-only mode.
-- Respect runtime capability limits from the app configuration. If entry search is unavailable, do not use extractSearchFilters or searchEntriesClient.
+- Respect runtime capability limits from the app configuration. If entry search is unavailable, do not use extractSearchFilters or listEntries.
 - Respect runtime capability limits from the app configuration. If pre-apply validation is unavailable, skip validateApprovedChangesClient and say that validation is unavailable.
-- Treat listContentTypesClient, getLocalesClient, getEntryDetailsClient, readEntriesClient, and searchEntriesClient as read-only inspection tools.
+- Treat listContentTypes, getContentType, getEntry, listEntries, and getLocales as read-only inspection tools.
 - Keep answers concise and operational.
 - If no action is needed yet, answer directly instead of forcing a tool call.`,
   model: {
@@ -72,12 +72,12 @@ Behavior rules:
   }),
   requestContextSchema: chatExecutionContextSchema,
   tools: {
-    listContentTypesClient: listContentTypesClientTool,
-    getEntryDetailsClient: getEntryDetailsClientTool,
-    readEntriesClient: readEntriesClientTool,
-    getLocalesClient: getLocalesClientTool,
+    listContentTypes: listContentTypesTool,
+    getContentType: getContentTypeTool,
+    getEntry: getEntryTool,
+    listEntries: listEntriesTool,
+    getLocales: getLocalesTool,
     extractSearchFilters: extractSearchFiltersTool,
-    searchEntriesClient: searchEntriesClientTool,
     updateEntryAndPublishClient: updateEntryAndPublishClientTool,
     discoverCandidatesClient: discoverCandidatesClientTool,
     draftProposals: draftProposalsTool,

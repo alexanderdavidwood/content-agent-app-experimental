@@ -4,6 +4,8 @@ import test from "node:test";
 import {
   appInstallationParametersSchema,
   chatExecutionContextSchema,
+  mcpEnvironmentSetupStatusSchema,
+  mcpSessionStatusSchema,
   getLocalesToolOutputSchema,
   listContentTypesToolInputSchema,
   readEntriesToolInputSchema,
@@ -48,6 +50,10 @@ test("installation parameters default new tool availability flags to true", () =
     mastraBaseUrl: "https://example.com",
   });
 
+  assert.equal(parsed.contentOpsProvider, "hybrid");
+  assert.equal(parsed.mcpAutoFallbackToClientSdk, true);
+  assert.equal(parsed.generalContentToolAvailability.listEntries, true);
+  assert.equal(parsed.generalContentToolAvailability.publishEntry, false);
   assert.deepEqual(parsed.toolAvailability, {
     semanticSearch: true,
     entrySearch: true,
@@ -62,6 +68,9 @@ test("chat execution context defaults time zone, current date, and tool availabi
 
   assert.equal(parsed.timeZone, "UTC");
   assert.match(parsed.currentDate, /^\d{4}-\d{2}-\d{2}$/);
+  assert.equal(parsed.contentOpsProvider, "hybrid");
+  assert.equal(parsed.generalContentToolAvailability.getContentType, true);
+  assert.equal(parsed.mcpAutoFallbackToClientSdk, true);
   assert.equal(parsed.toolAvailability.entrySearch, true);
   assert.equal(parsed.toolAvailability.preApplyValidation, true);
 });
@@ -130,4 +139,42 @@ test("pre-apply validation schema accepts blocking issues and warnings", () => {
 
   assert.equal(parsed.blockingIssues[0]?.severity, "blocking");
   assert.equal(parsed.warnings[0]?.severity, "warning");
+});
+
+test("mcp session and environment setup schemas accept hybrid status payloads", () => {
+  const session = mcpSessionStatusSchema.parse({
+    provider: "hybrid",
+    state: "connected",
+    sessionId: "session-1",
+    sessionCookieId: "cookie-1",
+    connectedAt: "2026-03-23T09:00:00.000Z",
+    availableTools: ["list_content_types", "get_entry"],
+    effectiveTools: [
+      {
+        toolName: "listEntries",
+        enabledInAppConfig: true,
+        availableViaMcp: true,
+        fallbackAvailable: true,
+        status: "enabled",
+      },
+    ],
+  });
+
+  const setup = mcpEnvironmentSetupStatusSchema.parse({
+    provider: "hybrid",
+    state: "ready",
+    spaceId: "space-1",
+    environmentId: "master",
+    requiredCategories: [
+      {
+        category: "entries",
+        access: "read-only",
+      },
+    ],
+    availableTools: ["search_entries"],
+    missingTools: [],
+  });
+
+  assert.equal(session.effectiveTools[0]?.toolName, "listEntries");
+  assert.equal(setup.requiredCategories[0]?.category, "entries");
 });

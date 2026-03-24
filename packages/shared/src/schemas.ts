@@ -9,6 +9,32 @@ import {
 
 const isoDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 
+const contentOpsProviderSchema = z.enum([
+  "client-sdk",
+  "remote-mcp",
+  "hybrid",
+]);
+
+const generalContentToolAvailabilitySchema = z
+  .object({
+    listContentTypes: z.boolean().default(true),
+    getContentType: z.boolean().default(true),
+    listEntries: z.boolean().default(true),
+    getEntry: z.boolean().default(true),
+    getLocales: z.boolean().default(true),
+    updateEntry: z.boolean().default(false),
+    publishEntry: z.boolean().default(false),
+  })
+  .default({
+    listContentTypes: true,
+    getContentType: true,
+    listEntries: true,
+    getEntry: true,
+    getLocales: true,
+    updateEntry: false,
+    publishEntry: false,
+  });
+
 const toolAvailabilitySchema = z
   .object({
     semanticSearch: z.boolean().default(true),
@@ -198,6 +224,17 @@ export const getEntryDetailsToolOutputSchema = z.object({
   locale: z.string(),
 });
 
+export const getContentTypeToolInputSchema = z.object({
+  contentTypeId: z.string().min(1),
+  includeFields: z.boolean().default(true),
+});
+
+export const getContentTypeToolOutputSchema = contentTypeSummarySchema;
+
+export const getEntryToolInputSchema = getEntryDetailsToolInputSchema;
+
+export const getEntryToolOutputSchema = getEntryDetailsToolOutputSchema;
+
 export const readEntriesToolInputSchema = z.object({
   entryIds: z.array(z.string().min(1)).min(1).max(20),
   locales: z.array(z.string().min(1)).max(10).default([]),
@@ -240,6 +277,9 @@ export const appInstallationParametersSchema = z.object({
   maxDiscoveryQueries: z.number().int().positive().max(5).default(5),
   maxCandidatesPerRun: z.number().int().positive().max(100).default(30),
   defaultDryRun: z.boolean().default(true),
+  contentOpsProvider: contentOpsProviderSchema.default("hybrid"),
+  generalContentToolAvailability: generalContentToolAvailabilitySchema,
+  mcpAutoFallbackToClientSdk: z.boolean().default(true),
   toolAvailability: toolAvailabilitySchema,
 });
 
@@ -248,10 +288,18 @@ export const chatExecutionContextSchema = z.object({
   timeZone: z.string().min(1).default("UTC"),
   currentDate: isoDateSchema.default(() => new Date().toISOString().slice(0, 10)),
   surfaceContext: agentSurfaceContextSchema.optional(),
+  organizationId: z.string().min(1).optional(),
+  spaceId: z.string().min(1).optional(),
+  environmentId: z.string().min(1).optional(),
+  contentfulUserId: z.string().min(1).optional(),
   allowedContentTypes: z.array(z.string()).default([]),
   maxDiscoveryQueries: z.number().int().positive().max(5).default(5),
   maxCandidatesPerRun: z.number().int().positive().max(100).default(30),
+  contentOpsProvider: contentOpsProviderSchema.default("hybrid"),
+  generalContentToolAvailability: generalContentToolAvailabilitySchema,
+  mcpAutoFallbackToClientSdk: z.boolean().default(true),
   toolAvailability: toolAvailabilitySchema,
+  mcpSession: z.lazy(() => mcpSessionStatusSchema).optional(),
 });
 
 export const semanticEnsureIndexInputSchema = z.object({
@@ -329,6 +377,67 @@ export const searchEntriesToolOutputSchema = z.object({
   total: z.number().int().nonnegative().optional(),
   entries: z.array(searchEntryHitSchema),
   warnings: z.array(z.string()).default([]),
+});
+
+export const listEntriesToolInputSchema = entrySearchFiltersSchema;
+
+export const listEntriesToolOutputSchema = searchEntriesToolOutputSchema;
+
+export const effectiveToolCapabilitySchema = z.object({
+  toolName: z.string().min(1),
+  enabledInAppConfig: z.boolean(),
+  availableViaMcp: z.boolean(),
+  fallbackAvailable: z.boolean(),
+  status: z.enum([
+    "enabled",
+    "disabled_in_app",
+    "mcp_unavailable",
+    "blocked_upstream",
+    "fallback_only",
+  ]),
+  reason: z.string().optional(),
+});
+
+export const mcpSessionStatusSchema = z.object({
+  provider: contentOpsProviderSchema,
+  state: z.enum([
+    "connected",
+    "disconnected",
+    "expired",
+    "admin_setup_required",
+    "error",
+  ]),
+  sessionId: z.string().optional(),
+  sessionCookieId: z.string().optional(),
+  connectedAt: z.string().optional(),
+  expiresAt: z.string().optional(),
+  spaceId: z.string().optional(),
+  environmentId: z.string().optional(),
+  contentfulUserId: z.string().optional(),
+  availableTools: z.array(z.string()).default([]),
+  effectiveTools: z.array(effectiveToolCapabilitySchema).default([]),
+  lastError: z.string().optional(),
+});
+
+export const mcpEnvironmentSetupStatusSchema = z.object({
+  provider: contentOpsProviderSchema,
+  state: z.enum([
+    "ready",
+    "missing_session",
+    "admin_setup_required",
+    "error",
+  ]),
+  spaceId: z.string().optional(),
+  environmentId: z.string().optional(),
+  requiredCategories: z.array(
+    z.object({
+      category: z.string().min(1),
+      access: z.enum(["read-only", "read-write"]),
+    }),
+  ),
+  availableTools: z.array(z.string()).default([]),
+  missingTools: z.array(z.string()).default([]),
+  message: z.string().optional(),
 });
 
 export const validationIssueSchema = z.object({
@@ -573,12 +682,20 @@ export type ListContentTypesToolInput = z.infer<
 export type ListContentTypesToolOutput = z.infer<
   typeof listContentTypesToolOutputSchema
 >;
+export type GetContentTypeToolInput = z.infer<
+  typeof getContentTypeToolInputSchema
+>;
+export type GetContentTypeToolOutput = z.infer<
+  typeof getContentTypeToolOutputSchema
+>;
 export type GetEntryDetailsToolInput = z.infer<
   typeof getEntryDetailsToolInputSchema
 >;
 export type GetEntryDetailsToolOutput = z.infer<
   typeof getEntryDetailsToolOutputSchema
 >;
+export type GetEntryToolInput = z.infer<typeof getEntryToolInputSchema>;
+export type GetEntryToolOutput = z.infer<typeof getEntryToolOutputSchema>;
 export type ReadEntriesToolInput = z.infer<typeof readEntriesToolInputSchema>;
 export type ReadEntriesToolOutput = z.infer<typeof readEntriesToolOutputSchema>;
 export type EntryFieldUpdate = z.infer<typeof entryFieldUpdateSchema>;
@@ -595,6 +712,10 @@ export type ChatExecutionContext = z.infer<typeof chatExecutionContextSchema>;
 export type ToolAvailability = z.infer<
   typeof appInstallationParametersSchema.shape.toolAvailability
 >;
+export type GeneralContentToolAvailability = z.infer<
+  typeof appInstallationParametersSchema.shape.generalContentToolAvailability
+>;
+export type ContentOpsProvider = z.infer<typeof contentOpsProviderSchema>;
 export type SemanticEnsureIndexInput = z.infer<
   typeof semanticEnsureIndexInputSchema
 >;
@@ -616,6 +737,15 @@ export type ExtractSearchFiltersToolOutput = z.infer<
 export type SearchEntriesToolInput = z.infer<typeof searchEntriesToolInputSchema>;
 export type SearchEntriesToolOutput = z.infer<
   typeof searchEntriesToolOutputSchema
+>;
+export type ListEntriesToolInput = z.infer<typeof listEntriesToolInputSchema>;
+export type ListEntriesToolOutput = z.infer<typeof listEntriesToolOutputSchema>;
+export type EffectiveToolCapability = z.infer<
+  typeof effectiveToolCapabilitySchema
+>;
+export type McpSessionStatus = z.infer<typeof mcpSessionStatusSchema>;
+export type McpEnvironmentSetupStatus = z.infer<
+  typeof mcpEnvironmentSetupStatusSchema
 >;
 export type ValidationIssue = z.infer<typeof validationIssueSchema>;
 export type RenameRunSummary = z.infer<typeof renameRunSummarySchema>;
