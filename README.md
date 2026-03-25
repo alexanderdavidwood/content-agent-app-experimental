@@ -150,8 +150,9 @@ Important runtime detail:
 | `MASTRA_STORAGE_URL` | No | `apps/mastra` | For BYO libSQL/Turso. If unset, local development falls back to `file:./.mastra/contentful-rename.db` |
 | `MASTRA_STORAGE_AUTH_TOKEN` | No | `apps/mastra` | Preferred auth token for remote `libsql://` databases |
 | `PORT` | No | `apps/mastra` | Backend port, default `4111` |
-| `ALLOWED_ORIGIN` | Yes in production | `apps/mastra` | Explicit Contentful app origin for credentialed CORS, for example `https://app.contentful.com` |
-| `ALLOWED_ORIGIN_EU` | Yes in production | `apps/mastra` | Explicit EU Contentful app origin, for example `https://app.eu.contentful.com` |
+| `ALLOWED_ORIGIN` | Yes in production | `apps/mastra` | Exact frontend origin allowed for credentialed CORS. Use the hosted app iframe origin, often `https://<id>.ctfcloud.net`, or a comma-separated list of exact origins during migration. |
+| `ALLOWED_ORIGIN_EU` | Yes in production | `apps/mastra` | Optional second exact frontend origin for credentialed CORS, also supporting comma-separated exact origins when needed. |
+| `ALLOW_CONTENTFUL_HOSTED_APP_ORIGINS` | No | `apps/mastra` | When `true`, production CORS accepts Contentful-hosted app origins such as `https://<id>.ctfcloud.net` and reflects the exact request origin. Use this if hosted bundle origins rotate and exact env values are not practical. |
 | `APP_SESSION_SECRET` | Yes in production | `apps/mastra` | Signs the per-editor MCP session cookie |
 | `MCP_SESSION_ENCRYPTION_KEY` | Yes in production | `apps/mastra` | Encrypts persisted remote MCP OAuth/session state at rest |
 | `CONTENTFUL_MCP_SERVER_URL` | No | `apps/mastra` | Defaults to `https://mcp.contentful.com/mcp` |
@@ -439,7 +440,8 @@ If the release changes the remote MCP session flow, also verify that:
 
 1. the backend deployment exposes `/mcp/session`, `/mcp/connect/start`, `/mcp/connect/callback`, and `/mcp/environment-setup`
 2. `ALLOWED_ORIGIN`, `ALLOWED_ORIGIN_EU`, `APP_SESSION_SECRET`, and `MCP_SESSION_ENCRYPTION_KEY` are configured in the deployed backend environment
-3. the installer/admin enables the required upstream Contentful MCP categories for `content types`, `entries`, and `locales` as read-only in the target environment
+3. either the configured allowed origin matches the current iframe origin shown in the app UI, or `ALLOW_CONTENTFUL_HOSTED_APP_ORIGINS=true` is enabled for rotating hosted app origins
+4. the installer/admin enables the required upstream Contentful MCP categories for `content types`, `entries`, and `locales` as read-only in the target environment
 
 ### Storage modes
 
@@ -515,6 +517,8 @@ The frontend performs a backend preflight check when stream requests fail and su
   Open the tunnel URL in a browser once or rotate to a new tunnel URL.
 - `404 Not Found`
   `mastraBaseUrl` is pointing at a service that does not expose `/chat/stream`.
+- generic `Failed to fetch` from a hosted Contentful bundle
+  Check the app's current origin in the config or chat UI. Then either set backend `ALLOWED_ORIGIN` or `ALLOWED_ORIGIN_EU` to that exact origin, or enable `ALLOW_CONTENTFUL_HOSTED_APP_ORIGINS=true` if you want the backend to accept Contentful-hosted bundle origins generically.
 - timeout or fetch failure
   Verify the backend is running and `/health` is reachable.
 

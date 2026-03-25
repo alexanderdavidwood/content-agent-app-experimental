@@ -2,6 +2,7 @@ import { DefaultChatTransport } from "ai";
 
 import {
   buildMastraRequestHeaders,
+  describeMastraConnectionFailure,
   preflightMastraBackend,
 } from "./contentfulClient";
 import type { RenameChatMessage, RenameChatRequestBody } from "./chatTypes";
@@ -36,7 +37,9 @@ async function fetchWithPreflight(
       throw new Error(preflight.message);
     }
 
-    throw error;
+    throw new Error(
+      describeMastraConnectionFailure(resolveBaseUrl(baseUrl), error),
+    );
   }
 }
 

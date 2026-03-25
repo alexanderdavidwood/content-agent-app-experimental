@@ -226,6 +226,50 @@ export function buildMastraRequestHeaders(
     : headers;
 }
 
+function resolveBrowserOrigin() {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  return window.location?.origin ?? null;
+}
+
+export function describeMastraConnectionFailure(
+  baseUrl: string,
+  error: unknown,
+) {
+  const detail = error instanceof Error ? error.message : String(error);
+  const browserOrigin = resolveBrowserOrigin();
+
+  if (detail === "Failed to fetch" && browserOrigin) {
+    try {
+      const backendOrigin = new URL(baseUrl).origin;
+      if (backendOrigin !== browserOrigin) {
+        const corsHint = browserOrigin.endsWith(".ctfcloud.net")
+          ? `Check backend CORS for ${browserOrigin}. Contentful-hosted app bundles run from their own ctfcloud.net origin, so ALLOWED_ORIGIN or ALLOWED_ORIGIN_EU must include that exact origin instead of app.contentful.com.`
+          : `Check backend CORS for ${browserOrigin}. ALLOWED_ORIGIN or ALLOWED_ORIGIN_EU must include the exact app origin making the request.`;
+        return `Backend request was blocked before a response. ${corsHint}`;
+      }
+    } catch {
+      // Fall through to the generic network error.
+    }
+  }
+
+  return `Backend is unreachable: ${detail}`;
+}
+
+async function fetchMastraEndpoint(
+  baseUrl: string,
+  input: string,
+  init: RequestInit,
+) {
+  try {
+    return await fetch(input, init);
+  } catch (error) {
+    throw new Error(describeMastraConnectionFailure(baseUrl, error));
+  }
+}
+
 export function getInstallationParameters(sdk: SdkLike) {
   const candidate = {
     ...DEFAULT_INSTALLATION_PARAMETERS,
@@ -1594,13 +1638,12 @@ export async function preflightMastraBackend(
       };
     }
 
-    const message = error instanceof Error ? error.message : String(error);
     return {
       ok: false,
       checkedUrl: healthUrl,
       code: "backend_unreachable",
-      detail: message,
-      message: `Backend is unreachable: ${message}`,
+      detail: error instanceof Error ? error.message : String(error),
+      message: describeMastraConnectionFailure(baseUrl, error),
     };
   } finally {
     clearTimeout(timeout);
@@ -1669,13 +1712,17 @@ export async function fetchMcpSessionStatus(
   baseUrl: string,
   request: McpStatusRequest,
 ): Promise<McpSessionStatus> {
-  const response = await fetch(buildMcpStatusUrl(baseUrl, "/mcp/session", request), {
-    method: "GET",
-    credentials: "include",
-    headers: buildMastraRequestHeaders(baseUrl, {
-      Accept: "application/json",
-    }),
-  });
+  const response = await fetchMastraEndpoint(
+    baseUrl,
+    buildMcpStatusUrl(baseUrl, "/mcp/session", request),
+    {
+      method: "GET",
+      credentials: "include",
+      headers: buildMastraRequestHeaders(baseUrl, {
+        Accept: "application/json",
+      }),
+    },
+  );
 
   if (!response.ok) {
     throw new Error(`Failed to load MCP session status (${response.status}).`);
@@ -1688,7 +1735,8 @@ export async function fetchMcpEnvironmentSetupStatus(
   baseUrl: string,
   request: McpStatusRequest,
 ): Promise<McpEnvironmentSetupStatus> {
-  const response = await fetch(
+  const response = await fetchMastraEndpoint(
+    baseUrl,
     buildMcpStatusUrl(baseUrl, "/mcp/environment-setup", request),
     {
       method: "GET",
@@ -1715,15 +1763,19 @@ export async function startContentfulMcpAuthorization(
   sessionId: string;
   redirectUrl: string;
 }> {
-  const response = await fetch(new URL("/mcp/connect/start", baseUrl).toString(), {
-    method: "POST",
-    credentials: "include",
-    headers: buildMastraRequestHeaders(baseUrl, {
-      Accept: "application/json",
-      "Content-Type": "application/json",
-    }),
-    body: JSON.stringify(request),
-  });
+  const response = await fetchMastraEndpoint(
+    baseUrl,
+    new URL("/mcp/connect/start", baseUrl).toString(),
+    {
+      method: "POST",
+      credentials: "include",
+      headers: buildMastraRequestHeaders(baseUrl, {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      }),
+      body: JSON.stringify(request),
+    },
+  );
 
   if (!response.ok) {
     const detail = await response.text().catch(() => "");
@@ -1744,7 +1796,8 @@ export async function disconnectContentfulMcpSession(
   baseUrl: string,
   request: McpStatusRequest,
 ): Promise<McpSessionStatus> {
-  const response = await fetch(
+  const response = await fetchMastraEndpoint(
+    baseUrl,
     buildMcpStatusUrl(baseUrl, "/mcp/disconnect", request),
     {
       method: "POST",

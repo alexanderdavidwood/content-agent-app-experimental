@@ -1033,6 +1033,8 @@ export default function ChatWorkspace({
   surfaceContext,
 }: ChatWorkspaceProps) {
   const parameters = getInstallationParameters(sdk);
+  const appOrigin =
+    typeof window === "undefined" ? "unknown" : window.location.origin;
   const organizationId = sdk.ids?.organization;
   const spaceId = sdk.ids?.space;
   const environmentId = sdk.ids?.environmentAlias ?? sdk.ids?.environment ?? "master";
@@ -1487,6 +1489,9 @@ export default function ChatWorkspace({
         </p>
         <p style={{ margin: 0, wordBreak: "break-all" }}>
           Backend: {parameters.mastraBaseUrl}
+        </p>
+        <p style={{ margin: 0, wordBreak: "break-all" }}>
+          App origin: {appOrigin}
         </p>
         <p style={{ margin: 0 }}>Thread: {chatMemory.thread}</p>
         <p style={{ margin: 0 }}>

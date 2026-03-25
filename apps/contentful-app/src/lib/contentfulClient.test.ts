@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   buildDefaultRenameInput,
+  describeMastraConnectionFailure,
   fallbackKeywordSearch,
   getEntryDetailsWithContentType,
   getLocales,
@@ -22,6 +23,69 @@ function createSdk(cma: any, overrides: Record<string, unknown> = {}) {
     ...overrides,
   } as any;
 }
+
+test("describeMastraConnectionFailure points to the hosted app origin on cross-origin fetch failures", () => {
+  const originalWindow = globalThis.window;
+
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: {
+      location: {
+        origin: "https://3d400b41-e914-42ac-9fbf-33a738d2a866.ctfcloud.net",
+      },
+    },
+  });
+
+  try {
+    assert.match(
+      describeMastraConnectionFailure(
+        "https://modern-quiet-elephant.mastra.cloud",
+        new TypeError("Failed to fetch"),
+      ),
+      /ALLOWED_ORIGIN|ALLOWED_ORIGIN_EU/,
+    );
+    assert.match(
+      describeMastraConnectionFailure(
+        "https://modern-quiet-elephant.mastra.cloud",
+        new TypeError("Failed to fetch"),
+      ),
+      /ctfcloud\.net origin/,
+    );
+  } finally {
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: originalWindow,
+    });
+  }
+});
+
+test("describeMastraConnectionFailure keeps same-origin failures generic", () => {
+  const originalWindow = globalThis.window;
+
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: {
+      location: {
+        origin: "https://modern-quiet-elephant.mastra.cloud",
+      },
+    },
+  });
+
+  try {
+    assert.equal(
+      describeMastraConnectionFailure(
+        "https://modern-quiet-elephant.mastra.cloud",
+        new TypeError("Failed to fetch"),
+      ),
+      "Backend is unreachable: Failed to fetch",
+    );
+  } finally {
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: originalWindow,
+    });
+  }
+});
 
 test("buildDefaultRenameInput prefers hybrid search to avoid missing exact matches", () => {
   const result = buildDefaultRenameInput({ surface: "page" }, "en-US");

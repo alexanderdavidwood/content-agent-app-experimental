@@ -73,6 +73,8 @@ export default function Config() {
   const [parameters, setParameters] = useState<AppInstallationParameters>(() =>
     resolveInitialParameters(sdk.parameters.installation),
   );
+  const appOrigin =
+    typeof window === "undefined" ? "unknown" : window.location.origin;
   const organizationId = sdk.ids?.organization;
   const spaceId = sdk.ids?.space;
   const environmentId = sdk.ids?.environmentAlias ?? sdk.ids?.environment ?? "master";
@@ -284,6 +286,15 @@ export default function Config() {
             }
           />
         </label>
+        <p style={{ margin: 0, color: "#52525b", wordBreak: "break-all" }}>
+          Current app origin: {appOrigin}
+        </p>
+        <p style={{ margin: 0, color: "#52525b", lineHeight: 1.5 }}>
+          If the backend responds with `Failed to fetch`, make sure its
+          `ALLOWED_ORIGIN` or `ALLOWED_ORIGIN_EU` value matches the exact app
+          origin above. Hosted Contentful bundles usually run from a
+          `*.ctfcloud.net` origin, not `app.contentful.com`.
+        </p>
         <label style={{ display: "grid", gap: 8 }}>
           <span>Allowed content types</span>
           <input
@@ -485,6 +496,9 @@ export default function Config() {
         <p style={{ margin: 0 }}>
           Space: <strong>{spaceId ?? "unknown"}</strong> · Environment:{" "}
           <strong>{environmentId}</strong>
+        </p>
+        <p style={{ margin: 0, wordBreak: "break-all" }}>
+          App origin: <strong>{appOrigin}</strong>
         </p>
         <p style={{ margin: 0 }}>
           Session status:{" "}
